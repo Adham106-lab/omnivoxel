@@ -4,11 +4,19 @@
   "private": true,
   "description": "Deterministic modular hardware/computing compiler and verifier engine",
   "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
-    "dev": "pnpm --filter @omnivoxel/web dev",
-    "build": "tsc -b",
+    "dev": "npm run dev --workspace=apps/web",
+    "build": "npm run build --workspace=apps/web",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "lint": "npm run typecheck --workspace=apps/web"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.8"
   }
 }

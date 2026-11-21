@@ -1,0 +1,5 @@
+{
+  "name": "OmniVoxel 3D Simulator & Verifier",
+  "description": "Deterministic modular hardware and computing compiler, 3D voxel assembly simulator, and multi-gate verifier engine.",
+  "requestFramePermissions": []
+}

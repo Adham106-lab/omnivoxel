@@ -4,7 +4,6 @@ import {
   createDefaultRegistry,
   dockToFurniture,
   GALLERY_HANDHELD_CONSOLE,
-  GALLERY_ITEMS,
   GalleryItem,
   parseDSL,
   RoomEnvironment,
@@ -45,7 +44,7 @@ export const App: React.FC = () => {
   const [selectedObstacleId, setSelectedObstacleId] = useState<string | null>(null);
   const [cameraTrigger, setCameraTrigger] = useState<number>(0);
 
-  // Canvas overlays
+  // Canvas guide toggles
   const [showRoomBounds, setShowRoomBounds] = useState<boolean>(true);
   const [showObstacles, setShowObstacles] = useState<boolean>(true);
   const [showGrid, setShowGrid] = useState<boolean>(true);
@@ -79,9 +78,10 @@ export const App: React.FC = () => {
   // Initial compilation on mount
   useEffect(() => {
     handleCompile(dslCode, roomEnvironment);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Switch Gallery Item
+  // Switch Gallery Item and auto-fit camera to new assembly
   const handleSelectGallery = (item: GalleryItem) => {
     setSelectedGallery(item);
     setDslCode(item.dsl);
@@ -96,7 +96,6 @@ export const App: React.FC = () => {
   const updateDslCoordinates = (transformedIr: VoxelIR, baseDsl: string): string => {
     let updated = baseDsl;
     for (const v of transformedIr.voxels) {
-      // Find voxel definition and replace its coordinate: voxel <id> @ (x, y, z)
       const regex = new RegExp(`voxel\\s+${v.id}\\s+@\\s*\\([-\\d\\s,]+\\)`, 'g');
       updated = updated.replace(
         regex,
@@ -131,134 +130,109 @@ export const App: React.FC = () => {
     setCameraTrigger((prev) => prev + 1);
   };
 
+  const handleSelectVoxel = useCallback((id: string | null) => {
+    setSelectedVoxelId(id);
+    if (id) setSelectedObstacleId(null);
+  }, []);
+
+  const handleSelectObstacle = useCallback((id: string | null) => {
+    setSelectedObstacleId(id);
+    if (id) setSelectedVoxelId(null);
+  }, []);
+
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#080c14] text-slate-100">
-      {/* =========================================================================
-          LEFT COLUMN (~65% width): 3D Three.js Simulator Canvas & Compact Top Bar
-          ========================================================================= */}
-      <section className="relative flex h-full w-[65%] flex-col border-r border-slate-800">
-        {/* Compact Top Bar */}
-        <TopBar
-          currentGalleryId={selectedGallery.id}
-          onSelectGallery={handleSelectGallery}
-          visualMode={visualMode}
-          onChangeVisualMode={setVisualMode}
-          onOpenRoomScan={() => setIsRoomScanOpen(true)}
-          onSnapToRoom={handleSnapToRoom}
-          onDockToFurniture={handleDockToFurniture}
-          onResetCamera={() => setCameraTrigger((prev) => prev + 1)}
-          showRoomBounds={showRoomBounds}
-          onToggleRoomBounds={() => setShowRoomBounds(!showRoomBounds)}
-          showObstacles={showObstacles}
-          onToggleObstacles={() => setShowObstacles(!showObstacles)}
-          showGrid={showGrid}
-          onToggleGrid={() => setShowGrid(!showGrid)}
-        />
+    <div className="flex h-screen w-screen flex-col overflow-hidden bg-[#080c14] text-slate-100">
+      {/* Single Full-Width Top Bar */}
+      <TopBar
+        currentGalleryId={selectedGallery.id}
+        onSelectGallery={handleSelectGallery}
+        visualMode={visualMode}
+        onChangeVisualMode={setVisualMode}
+        onOpenRoomScan={() => setIsRoomScanOpen(true)}
+        onSnapToRoom={handleSnapToRoom}
+        onDockToFurniture={handleDockToFurniture}
+        onResetCamera={() => setCameraTrigger((prev) => prev + 1)}
+        showRoomBounds={showRoomBounds}
+        onToggleRoomBounds={() => setShowRoomBounds((v) => !v)}
+        showObstacles={showObstacles}
+        onToggleObstacles={() => setShowObstacles((v) => !v)}
+        showGrid={showGrid}
+        onToggleGrid={() => setShowGrid((v) => !v)}
+      />
 
-        {/* 3D Canvas Viewport */}
-        <div className="relative flex-1 overflow-hidden">
-          <SimulatorCanvas
-            ir={ir}
-            room={roomEnvironment}
-            visualMode={visualMode}
-            selectedVoxelId={selectedVoxelId}
-            selectedObstacleId={selectedObstacleId}
-            showRoomBounds={showRoomBounds}
-            showObstacles={showObstacles}
-            showGrid={showGrid}
-            onSelectVoxel={(id) => {
-              setSelectedVoxelId(id);
-              if (id) setSelectedObstacleId(null);
-            }}
-            onSelectObstacle={(id) => {
-              setSelectedObstacleId(id);
-              if (id) setSelectedVoxelId(null);
-            }}
-            cameraTrigger={cameraTrigger}
-          />
-
-          {/* Mode Pill Indicator in top-right of 3D canvas */}
-          <div className="pointer-events-none absolute right-3 top-3 flex items-center gap-2 rounded-lg border border-slate-800/80 bg-slate-950/80 px-3 py-1.5 text-xs font-mono backdrop-blur-md">
-            <span className="text-slate-400">Mode:</span>
-            <span
-              className={`font-bold ${
-                visualMode === 'Assembly'
-                  ? 'text-cyan-400'
-                  : visualMode === 'Thermal'
-                  ? 'text-red-400'
-                  : 'text-purple-400'
-              }`}
-            >
-              {visualMode.toUpperCase()}
-            </span>
-            <span className="text-slate-600">|</span>
-            <span className="text-slate-400">{ir?.voxels.length ?? 0} cubes</span>
+      {/* Clean 2-Column Workspace: Left (~62%) 3D Viewport | Right (~38%) DSL + 5-Gate */}
+      <main className="flex min-h-0 flex-1 overflow-hidden">
+        {/* Left Column (~62%): 3D Viewport + Minimal Status Bar */}
+        <section className="flex min-h-0 min-w-0 w-[62%] flex-col bg-[#090e1a]">
+          <div className="relative min-h-0 flex-1 overflow-hidden">
+            <SimulatorCanvas
+              ir={ir}
+              room={roomEnvironment}
+              visualMode={visualMode}
+              selectedVoxelId={selectedVoxelId}
+              selectedObstacleId={selectedObstacleId}
+              showRoomBounds={showRoomBounds}
+              showObstacles={showObstacles}
+              showGrid={showGrid}
+              onSelectVoxel={handleSelectVoxel}
+              onSelectObstacle={handleSelectObstacle}
+              cameraTrigger={cameraTrigger}
+            />
           </div>
 
-          {/* Bottom Canvas Status Bar */}
-          <div className="absolute bottom-0 left-0 right-0 flex h-8 items-center justify-between border-t border-slate-800/80 bg-[#0a0f1d]/90 px-4 text-[11px] text-slate-400 backdrop-blur-sm">
-            <div className="flex items-center gap-4">
-              <span>
-                Room:{' '}
-                <strong className="text-slate-300">
-                  {roomEnvironment.name || roomEnvironment.id || 'Custom'}
-                </strong>{' '}
-                ({roomEnvironment.dimensionsMm.x} × {roomEnvironment.dimensionsMm.y} ×{' '}
-                {roomEnvironment.dimensionsMm.z} mm)
+          {/* Minimal Bottom Status Bar */}
+          <footer className="flex h-8 shrink-0 items-center justify-between gap-4 border-t border-slate-800/90 bg-[#0b1120] px-4 text-[11px] text-slate-400">
+            <div className="min-w-0 truncate">
+              <span className="text-slate-500">Room: </span>
+              <span className="font-medium text-slate-200">
+                {roomEnvironment.name || roomEnvironment.id || 'Custom'}
               </span>
-              <span>
-                Obstacles:{' '}
-                <strong className="text-slate-300">
-                  {roomEnvironment.obstacles.length}
-                </strong>
+              <span className="mx-1.5 text-slate-600">·</span>
+              <span className="font-mono tabular-nums text-slate-400">
+                {roomEnvironment.dimensionsMm.x} × {roomEnvironment.dimensionsMm.y} ×{' '}
+                {roomEnvironment.dimensionsMm.z} mm
               </span>
             </div>
 
-            <div className="flex items-center gap-3 font-mono">
+            <div className="shrink-0 whitespace-nowrap font-mono">
               {selectedVoxelId ? (
-                <span className="text-cyan-400">
-                  Selected Voxel: <strong>{selectedVoxelId}</strong>
+                <span className="text-sky-400">
+                  Voxel: <strong className="font-semibold">{selectedVoxelId}</strong>
                 </span>
               ) : selectedObstacleId ? (
                 <span className="text-amber-400">
-                  Selected Obstacle: <strong>{selectedObstacleId}</strong>
+                  Obstacle: <strong className="font-semibold">{selectedObstacleId}</strong>
                 </span>
               ) : (
-                <span className="text-slate-500">Click a voxel or obstacle to inspect</span>
+                <span className="text-slate-500">Click a voxel to inspect</span>
               )}
             </div>
+          </footer>
+        </section>
+
+        {/* Right Column (~38%): Stacked DSL Editor (top) & 5-Gate Verification (bottom) */}
+        <aside className="flex min-h-0 w-[38%] min-w-[360px] flex-col border-l border-slate-800/90 bg-[#0b101c]">
+          <div className="min-h-0 h-[46%] border-b border-slate-800/90">
+            <CodeEditorPanel
+              code={dslCode}
+              onChangeCode={setDslCode}
+              onCompile={() => handleCompile(dslCode, roomEnvironment)}
+              isCompiling={isCompiling}
+              compileError={compileError}
+              voxelCount={ir?.voxels.length ?? 0}
+            />
           </div>
-        </div>
-      </section>
 
-      {/* =========================================================================
-          RIGHT COLUMN (~35% width): Docked Sidebar split cleanly into two panels:
-            1. Top (~50% height): Hardware DSL Editor + Compile & Verify button
-            2. Bottom (~50% height): 5-Gate Verification Report
-          ========================================================================= */}
-      <aside className="flex h-full w-[35%] flex-col bg-[#0b101c]">
-        {/* Panel 1 (Top): DSL Code Editor */}
-        <div className="h-[48%] min-h-[220px]">
-          <CodeEditorPanel
-            code={dslCode}
-            onChangeCode={setDslCode}
-            onCompile={() => handleCompile(dslCode, roomEnvironment)}
-            isCompiling={isCompiling}
-            compileError={compileError}
-            voxelCount={ir?.voxels.length ?? 0}
-          />
-        </div>
-
-        {/* Panel 2 (Bottom): 5-Gate Verification Report */}
-        <div className="h-[52%] min-h-[260px] flex-1 border-t border-slate-800">
-          <VerificationPanel
-            result={verificationResult}
-            ir={ir}
-            selectedVoxelId={selectedVoxelId}
-            onSelectVoxel={setSelectedVoxelId}
-          />
-        </div>
-      </aside>
+          <div className="min-h-0 flex-1">
+            <VerificationPanel
+              result={verificationResult}
+              ir={ir}
+              selectedVoxelId={selectedVoxelId}
+              onSelectVoxel={handleSelectVoxel}
+            />
+          </div>
+        </aside>
+      </main>
 
       {/* Room Scan JSON & Dimensions Editor Modal */}
       <RoomScanModal
