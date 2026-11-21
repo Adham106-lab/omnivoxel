@@ -1,18 +1,61 @@
 import { VoxelIR, VoxelInstance } from './ir.js';
-import { Diagnostic, VerifierResult } from './types.js';
+import {
+  calculateBoxClearanceMm,
+  calculateVoxelBoundsMm,
+  doBoxesOverlap,
+  getRoomBoundsMm,
+  RoomEnvironment,
+} from './room.js';
+import { Coord3D, Diagnostic, VerifierResult } from './types.js';
 
 const GRAVITY_M_S2 = 9.80665;
 const I2C_MAX_DISTANCE_METERS = 1.0; // From MIT VIK paper Section 7.2
+
+export interface VerifyOptions {
+  room?: RoomEnvironment;
+  roomPlacement?: {
+    offsetMm?: Coord3D;
+    voxelPitchMm?: number;
+  };
+  minClearanceMm?: number;
+}
 
 export class VoxelVerifier {
   /**
    * Run all 5 deterministic verification gates against the VoxelIR.
    */
-  public verify(ir: VoxelIR): VerifierResult {
+  public verify(
+    ir: VoxelIR,
+    options?: VerifyOptions | RoomEnvironment
+  ): VerifierResult {
+    let room: RoomEnvironment | undefined;
+    let placementOffset: Coord3D = { x: 0, y: 0, z: 0 };
+    let defaultPitch = 150;
+    let minClearanceMm = 15;
+
+    if (options) {
+      if ('obstacles' in options && 'dimensionsMm' in options) {
+        room = options as RoomEnvironment;
+      } else {
+        const opts = options as VerifyOptions;
+        room = opts.room;
+        if (opts.roomPlacement?.offsetMm) placementOffset = opts.roomPlacement.offsetMm;
+        if (opts.roomPlacement?.voxelPitchMm) defaultPitch = opts.roomPlacement.voxelPitchMm;
+        if (opts.minClearanceMm !== undefined) minClearanceMm = opts.minClearanceMm;
+      }
+    }
+
     const diagnostics: Diagnostic[] = [];
 
-    // Gate 1: Spatial overlap & single connected graph check
-    this.verifyGate1SpatialTopology(ir, diagnostics);
+    // Gate 1: Spatial overlap, single connected graph, room bounds & obstacle collision
+    this.verifyGate1SpatialTopology(
+      ir,
+      diagnostics,
+      room,
+      placementOffset,
+      defaultPitch,
+      minClearanceMm
+    );
 
     // Gate 2: Dual-Plane Bus check (High-Speed & Control Plane / I2C)
     this.verifyGate2DualPlaneBus(ir, diagnostics);
@@ -38,11 +81,18 @@ export class VoxelVerifier {
   }
 
   // --------------------------------------------------------------------------
-  // Gate 1: Spatial Overlap & Single Connected Graph
+  // Gate 1: Spatial Overlap, Connectivity, Room Bounds & Obstacle Collisions
   // --------------------------------------------------------------------------
-  private verifyGate1SpatialTopology(ir: VoxelIR, diagnostics: Diagnostic[]): void {
+  private verifyGate1SpatialTopology(
+    ir: VoxelIR,
+    diagnostics: Diagnostic[],
+    room?: RoomEnvironment,
+    placementOffset: Coord3D = { x: 0, y: 0, z: 0 },
+    defaultPitch: number = 150,
+    minClearanceMm: number = 15
+  ): void {
     const gate = 1;
-    const gateName = 'Spatial & Topology';
+    const gateName = 'Spatial & Connectivity';
 
     // 1A. Check for spatial overlap
     const coordMap = new Map<string, VoxelInstance[]>();
@@ -113,6 +163,85 @@ export class VoxelVerifier {
           suggestedFix:
             'Add structural voxels (e.g. vox.struct.alu-150) to bridge disconnected voxel clusters into a single connected lattice.',
         });
+      }
+    }
+
+    // 1C, 1D, 1E: Scanned Room Environment checks (bounds, obstacle collisions & clearances)
+    if (room) {
+      const roomBounds = getRoomBoundsMm(room);
+
+      // 1C. Room boundary checks
+      for (const v of ir.voxels) {
+        const vBounds = calculateVoxelBoundsMm(v, placementOffset, defaultPitch);
+        const outsideX =
+          vBounds.min.x < roomBounds.min.x || vBounds.max.x > roomBounds.max.x;
+        const outsideY =
+          vBounds.min.y < roomBounds.min.y || vBounds.max.y > roomBounds.max.y;
+        const outsideZ =
+          vBounds.min.z < roomBounds.min.z || vBounds.max.z > roomBounds.max.z;
+
+        if (outsideX || outsideY || outsideZ) {
+          diagnostics.push({
+            gate,
+            gateName,
+            severity: 'error',
+            message: `Room bounds violation: voxel "${v.id}" at [${vBounds.min.x}, ${vBounds.min.y}, ${vBounds.min.z}] to [${vBounds.max.x}, ${vBounds.max.y}, ${vBounds.max.z}] mm extends outside scanned room boundary ([${roomBounds.min.x}, ${roomBounds.min.y}, ${roomBounds.min.z}] to [${roomBounds.max.x}, ${roomBounds.max.y}, ${roomBounds.max.z}] mm).`,
+            voxelIds: [v.id],
+            suggestedFix:
+              'Apply layout placement helper (snap-to-room) or translate assembly coordinates to remain within scanned room dimensions.',
+            metadata: { voxelBounds: vBounds, roomBounds },
+          });
+        }
+      }
+
+      // 1D. Collisions against fixed obstacles (walls, fixed furniture, appliances)
+      for (const obstacle of room.obstacles) {
+        if (obstacle.isFixed !== false) {
+          const obstBounds = {
+            min: obstacle.boundsMinMm,
+            max: obstacle.boundsMaxMm,
+          };
+
+          for (const v of ir.voxels) {
+            const vBounds = calculateVoxelBoundsMm(v, placementOffset, defaultPitch);
+            if (doBoxesOverlap(vBounds, obstBounds)) {
+              diagnostics.push({
+                gate,
+                gateName,
+                severity: 'error',
+                message: `Spatial collision detected: voxel "${v.id}" collides with fixed ${obstacle.type} obstacle "${obstacle.name || obstacle.id}".`,
+                voxelIds: [v.id],
+                suggestedFix: `Use dock-to-furniture helper or translate assembly so voxel "${v.id}" mounts cleanly adjacent to "${obstacle.name || obstacle.id}" without penetrating it.`,
+                metadata: {
+                  obstacleId: obstacle.id,
+                  obstacleType: obstacle.type,
+                  voxelBounds: vBounds,
+                  obstacleBounds: obstBounds,
+                },
+              });
+            } else {
+              // 1E. Basic clearance check
+              const clearance = calculateBoxClearanceMm(vBounds, obstBounds);
+              if (clearance > 0 && clearance < minClearanceMm) {
+                diagnostics.push({
+                  gate,
+                  gateName,
+                  severity: 'warning',
+                  message: `Low clearance warning: voxel "${v.id}" has ${clearance.toFixed(
+                    1
+                  )} mm clearance to fixed ${obstacle.type} "${obstacle.name || obstacle.id}", below recommended clearance of ${minClearanceMm} mm.`,
+                  voxelIds: [v.id],
+                  suggestedFix: `Adjust assembly placement to maintain at least ${minClearanceMm} mm clearance from "${obstacle.name || obstacle.id}" for proper thermal airflow and servicing.`,
+                  metadata: {
+                    obstacleId: obstacle.id,
+                    clearanceMm: clearance,
+                    minClearanceMm,
+                  },
+                });
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -524,7 +653,10 @@ export class VoxelVerifier {
 /**
  * Convenient helper to verify an IR assembly directly.
  */
-export function verifyAssembly(ir: VoxelIR): VerifierResult {
+export function verifyAssembly(
+  ir: VoxelIR,
+  options?: VerifyOptions | RoomEnvironment
+): VerifierResult {
   const verifier = new VoxelVerifier();
-  return verifier.verify(ir);
+  return verifier.verify(ir, options);
 }

@@ -13,7 +13,8 @@
     "resolveJsonModule": true,
     "composite": true
   },
-  "exclude": ["vitest.config.ts", "packages/**/test/**"],
+  "files": [],
+  "exclude": ["vitest.config.ts", "packages/**/test/**", "apps/**"],
   "references": [
     { "path": "./packages/core" }
   ]

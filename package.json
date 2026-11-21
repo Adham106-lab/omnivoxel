@@ -5,6 +5,7 @@
   "description": "Deterministic modular hardware/computing compiler and verifier engine",
   "type": "module",
   "scripts": {
+    "dev": "pnpm --filter @omnivoxel/web dev",
     "build": "tsc -b",
     "test": "vitest run",
     "test:watch": "vitest",
