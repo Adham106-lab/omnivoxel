@@ -1,249 +1,269 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   compileToIR,
   createDefaultRegistry,
+  DslParseError,
   dockToFurniture,
   GALLERY_HANDHELD_CONSOLE,
-  GalleryItem,
   parseDSL,
-  RoomEnvironment,
   snapToRoom,
   verifyAssembly,
-  VerifierResult,
-  VoxelIR,
+  type DockToFurnitureOptions,
+  type EnvironmentObstacle,
+  type GalleryItem,
+  type PlacementResult,
+  type RoomEnvironment,
+  type SnapToRoomOptions,
+  type VerifierResult,
+  type VoxelIR,
 } from '@omnivoxel/core';
-import { CodeEditorPanel } from './components/CodeEditorPanel';
-import { RoomScanModal } from './components/RoomScanModal';
-import { SimulatorCanvas } from './components/SimulatorCanvas';
+import { DslEditorPanel } from './components/DslEditorPanel';
+import { GallerySelect } from './components/GallerySelect';
+import { RoomPopover } from './components/RoomPopover';
 import { TopBar } from './components/TopBar';
-import { VerificationPanel } from './components/VerificationPanel';
-import { VisualMode } from './types';
+import { VerificationInspector } from './components/VerificationInspector';
+import { ViewportPanel } from './components/ViewportPanel';
+import { buildIssueMap } from './lib/diagnostics';
+import { insertQuickVoxel, rewriteDslCoordinates, type QuickInsertKey } from './lib/layout';
+import { analyzeThermal } from './lib/thermal';
+import type { CompileFailure, Guides, Selection, VisualMode } from './types';
 
 const registry = createDefaultRegistry();
 
+interface Compiled {
+  ir: VoxelIR;
+  result: VerifierResult;
+}
+
+/** DSL -> AST -> Voxel IR -> 5-gate verification. Throws on parse / compile errors. */
+function compileSource(dsl: string, room: RoomEnvironment): Compiled {
+  const ast = parseDSL(dsl);
+  const ir = compileToIR(ast, registry);
+  const result = verifyAssembly(ir, room);
+  return { ir, result };
+}
+
+function toFailure(error: unknown): CompileFailure {
+  if (error instanceof DslParseError) return { message: error.message, line: error.line };
+  return { message: error instanceof Error ? error.message : String(error) };
+}
+
+const DEFAULT_ITEM = GALLERY_HANDHELD_CONSOLE;
+
 export const App: React.FC = () => {
-  // Gallery selection
-  const [selectedGallery, setSelectedGallery] = useState<GalleryItem>(
-    GALLERY_HANDHELD_CONSOLE
-  );
+  // --- Document state ---------------------------------------------------------
+  const [galleryId, setGalleryId] = useState<string>(DEFAULT_ITEM.id);
+  const [dsl, setDsl] = useState<string>(DEFAULT_ITEM.dsl);
+  const [compiledDsl, setCompiledDsl] = useState<string>(DEFAULT_ITEM.dsl);
+  const [room, setRoom] = useState<RoomEnvironment>(DEFAULT_ITEM.roomEnvironment);
+  const [compiled, setCompiled] = useState<Compiled | null>(() => {
+    try {
+      return compileSource(DEFAULT_ITEM.dsl, DEFAULT_ITEM.roomEnvironment);
+    } catch {
+      return null;
+    }
+  });
+  const [failure, setFailure] = useState<CompileFailure | null>(null);
 
-  // Core assembly & verification state
-  const [dslCode, setDslCode] = useState<string>(GALLERY_HANDHELD_CONSOLE.dsl);
-  const [roomEnvironment, setRoomEnvironment] = useState<RoomEnvironment>(
-    GALLERY_HANDHELD_CONSOLE.roomEnvironment
-  );
-  const [ir, setIr] = useState<VoxelIR | null>(null);
-  const [verificationResult, setVerificationResult] =
-    useState<VerifierResult | null>(null);
-  const [compileError, setCompileError] = useState<string | null>(null);
-  const [isCompiling, setIsCompiling] = useState<boolean>(false);
+  // --- View state -------------------------------------------------------------
+  const [mode, setMode] = useState<VisualMode>('Assembly');
+  const [selection, setSelection] = useState<Selection>(null);
+  const [guides, setGuides] = useState<Guides>({ roomBounds: true, obstacles: true, grid: true });
+  const [cameraTrigger, setCameraTrigger] = useState(0);
+  const [notice, setNotice] = useState<string | null>(null);
 
-  // Visual settings & modes
-  const [visualMode, setVisualMode] = useState<VisualMode>('Assembly');
-  const [selectedVoxelId, setSelectedVoxelId] = useState<string | null>(null);
-  const [selectedObstacleId, setSelectedObstacleId] = useState<string | null>(null);
-  const [cameraTrigger, setCameraTrigger] = useState<number>(0);
+  const ir = compiled?.ir ?? null;
+  const result = compiled?.result ?? null;
 
-  // Canvas guide toggles
-  const [showRoomBounds, setShowRoomBounds] = useState<boolean>(true);
-  const [showObstacles, setShowObstacles] = useState<boolean>(true);
-  const [showGrid, setShowGrid] = useState<boolean>(true);
+  // Derived data (memoised so the 3D scene only rebuilds when the IR / room changes)
+  const issues = useMemo(() => buildIssueMap(result), [result]);
+  const thermal = useMemo(() => (ir ? analyzeThermal(ir) : new Map()), [ir]);
 
-  // Modal
-  const [isRoomScanOpen, setIsRoomScanOpen] = useState<boolean>(false);
+  useEffect(() => {
+    if (!notice) return;
+    const t = window.setTimeout(() => setNotice(null), 4500);
+    return () => window.clearTimeout(t);
+  }, [notice]);
 
-  // Compile & Verify execution logic
-  const handleCompile = useCallback(
-    (codeToCompile: string, roomToVerify: RoomEnvironment) => {
-      setIsCompiling(true);
-      setCompileError(null);
+  const fitCamera = useCallback(() => setCameraTrigger((n) => n + 1), []);
 
+  /** Applies a successful compile and drops selections that no longer exist. */
+  const commit = useCallback((next: Compiled, source: string) => {
+    setCompiled(next);
+    setCompiledDsl(source);
+    setFailure(null);
+    setSelection((sel) =>
+      sel?.kind === 'voxel' && !next.ir.voxelMap.has(sel.id) ? null : sel
+    );
+  }, []);
+
+  // --- Compile & Verify -------------------------------------------------------
+  const handleCompile = useCallback(() => {
+    try {
+      commit(compileSource(dsl, room), dsl);
+    } catch (e) {
+      setFailure(toFailure(e));
+    }
+  }, [dsl, room, commit]);
+
+  // --- Gallery ---------------------------------------------------------------
+  const handleSelectGallery = useCallback(
+    (item: GalleryItem) => {
+      setGalleryId(item.id);
+      setDsl(item.dsl);
+      setRoom(item.roomEnvironment);
+      setSelection(null);
       try {
-        const ast = parseDSL(codeToCompile);
-        const compiledIr = compileToIR(ast, registry);
-        const result = verifyAssembly(compiledIr, roomToVerify);
-
-        setIr(compiledIr);
-        setVerificationResult(result);
-      } catch (err: any) {
-        setCompileError(err.message || 'Compilation failed due to syntax error');
-        setVerificationResult(null);
-      } finally {
-        setIsCompiling(false);
+        commit(compileSource(item.dsl, item.roomEnvironment), item.dsl);
+      } catch (e) {
+        setFailure(toFailure(e));
       }
+      fitCamera();
+    },
+    [commit, fitCamera]
+  );
+
+  // --- Room edits re-verify the current IR against the new room ---------------
+  const handleRoomChange = useCallback(
+    (nextRoom: RoomEnvironment) => {
+      setRoom(nextRoom);
+      setCompiled((prev) => (prev ? { ir: prev.ir, result: verifyAssembly(prev.ir, nextRoom) } : prev));
+      setSelection((sel) =>
+        sel?.kind === 'obstacle' && !nextRoom.obstacles.some((o) => o.id === sel.id) ? null : sel
+      );
     },
     []
   );
 
-  // Initial compilation on mount
-  useEffect(() => {
-    handleCompile(dslCode, roomEnvironment);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // --- Layout actions (snap / dock) ------------------------------------------
+  const runPlacement = useCallback(
+    (label: string, place: (base: VoxelIR) => PlacementResult) => {
+      try {
+        // Place against what is currently in the editor, not a stale compile
+        const base = compileToIR(parseDSL(dsl), registry);
+        const placement = place(base);
+        const nextDsl = rewriteDslCoordinates(dsl, placement.transformedIr.voxels);
+        const next = compileSource(nextDsl, room);
+        setDsl(nextDsl);
+        commit(next, nextDsl);
+        fitCamera();
+        const g = placement.gridOffset;
+        setNotice(`${label} · moved (${g.x}, ${g.y}, ${g.z}) cells`);
+      } catch (e) {
+        setFailure(toFailure(e));
+      }
+    },
+    [dsl, room, commit, fitCamera]
+  );
 
-  // Switch Gallery Item and auto-fit camera to new assembly
-  const handleSelectGallery = (item: GalleryItem) => {
-    setSelectedGallery(item);
-    setDslCode(item.dsl);
-    setRoomEnvironment(item.roomEnvironment);
-    setSelectedVoxelId(null);
-    setSelectedObstacleId(null);
-    handleCompile(item.dsl, item.roomEnvironment);
-    setCameraTrigger((prev) => prev + 1);
-  };
+  const handleSnap = useCallback(
+    (alignment: NonNullable<SnapToRoomOptions['alignment']>) =>
+      runPlacement(`Snapped to ${alignment}`, (base) => snapToRoom(base, room, { alignment })),
+    [runPlacement, room]
+  );
 
-  // Helper to re-serialize transformed IR voxels into DSL code
-  const updateDslCoordinates = (transformedIr: VoxelIR, baseDsl: string): string => {
-    let updated = baseDsl;
-    for (const v of transformedIr.voxels) {
-      const regex = new RegExp(`voxel\\s+${v.id}\\s+@\\s*\\([-\\d\\s,]+\\)`, 'g');
-      updated = updated.replace(
-        regex,
-        `voxel ${v.id} @ (${v.coord.x}, ${v.coord.y}, ${v.coord.z})`
-      );
+  /** Selected obstacle wins; otherwise the first furniture, then appliance. */
+  const dockTarget: EnvironmentObstacle | undefined = useMemo(() => {
+    if (selection?.kind === 'obstacle') {
+      const picked = room.obstacles.find((o) => o.id === selection.id);
+      if (picked) return picked;
     }
-    return updated;
-  };
+    return (
+      room.obstacles.find((o) => o.type === 'furniture') ??
+      room.obstacles.find((o) => o.type === 'appliance')
+    );
+  }, [room, selection]);
 
-  // Snap to Room Floor Placement
-  const handleSnapToRoom = () => {
-    if (!ir) return;
-    const placement = snapToRoom(ir, roomEnvironment, { alignment: 'floor' });
-    const newDsl = updateDslCoordinates(placement.transformedIr, dslCode);
-    setDslCode(newDsl);
-    handleCompile(newDsl, roomEnvironment);
-    setCameraTrigger((prev) => prev + 1);
-  };
+  const handleDock = useCallback(
+    (alignment: NonNullable<DockToFurnitureOptions['alignment']>) => {
+      if (!dockTarget) return;
+      runPlacement(`Docked ${alignment} of ${dockTarget.name ?? dockTarget.id}`, (base) =>
+        dockToFurniture(base, dockTarget, { alignment })
+      );
+    },
+    [runPlacement, dockTarget]
+  );
 
-  // Dock to Furniture Placement
-  const handleDockToFurniture = () => {
-    if (!ir) return;
-    const desk =
-      roomEnvironment.obstacles.find((o) => o.type === 'furniture') ||
-      roomEnvironment.obstacles[0];
-    if (!desk) return;
+  // --- Editor helpers --------------------------------------------------------
+  const handleQuickInsert = useCallback(
+    (key: QuickInsertKey) => setDsl((current) => insertQuickVoxel(current, key, registry)),
+    []
+  );
 
-    const placement = dockToFurniture(ir, desk, { alignment: 'top' });
-    const newDsl = updateDslCoordinates(placement.transformedIr, dslCode);
-    setDslCode(newDsl);
-    handleCompile(newDsl, roomEnvironment);
-    setCameraTrigger((prev) => prev + 1);
-  };
-
-  const handleSelectVoxel = useCallback((id: string | null) => {
-    setSelectedVoxelId(id);
-    if (id) setSelectedObstacleId(null);
-  }, []);
-
-  const handleSelectObstacle = useCallback((id: string | null) => {
-    setSelectedObstacleId(id);
-    if (id) setSelectedVoxelId(null);
-  }, []);
+  const handleSelect = useCallback((next: Selection) => setSelection(next), []);
+  const handleSelectVoxel = useCallback((id: string) => setSelection({ kind: 'voxel', id }), []);
+  const handleSelectObstacle = useCallback((id: string) => setSelection({ kind: 'obstacle', id }), []);
+  const handleToggleGuide = useCallback(
+    (key: keyof Guides) => setGuides((g) => ({ ...g, [key]: !g[key] })),
+    []
+  );
 
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-[#080c14] text-slate-100">
-      {/* Single Full-Width Top Bar */}
+    <div className="flex h-screen w-screen flex-col overflow-hidden bg-[#090d16] text-slate-200">
       <TopBar
-        currentGalleryId={selectedGallery.id}
-        onSelectGallery={handleSelectGallery}
-        visualMode={visualMode}
-        onChangeVisualMode={setVisualMode}
-        onOpenRoomScan={() => setIsRoomScanOpen(true)}
-        onSnapToRoom={handleSnapToRoom}
-        onDockToFurniture={handleDockToFurniture}
-        onResetCamera={() => setCameraTrigger((prev) => prev + 1)}
-        showRoomBounds={showRoomBounds}
-        onToggleRoomBounds={() => setShowRoomBounds((v) => !v)}
-        showObstacles={showObstacles}
-        onToggleObstacles={() => setShowObstacles((v) => !v)}
-        showGrid={showGrid}
-        onToggleGrid={() => setShowGrid((v) => !v)}
+        mode={mode}
+        onModeChange={setMode}
+        left={<GallerySelect currentId={galleryId} onSelect={handleSelectGallery} />}
+        right={
+          <RoomPopover
+            room={room}
+            selection={selection}
+            guides={guides}
+            hasAssembly={ir !== null}
+            dockTarget={dockTarget}
+            onRoomChange={handleRoomChange}
+            onToggleGuide={handleToggleGuide}
+            onSnap={handleSnap}
+            onDock={handleDock}
+            onSelectObstacle={handleSelectObstacle}
+            onFit={fitCamera}
+          />
+        }
       />
 
-      {/* Clean 2-Column Workspace: Left (~62%) 3D Viewport | Right (~38%) DSL + 5-Gate */}
-      <main className="flex min-h-0 flex-1 overflow-hidden">
-        {/* Left Column (~62%): 3D Viewport + Minimal Status Bar */}
-        <section className="flex min-h-0 min-w-0 w-[62%] flex-col bg-[#090e1a]">
-          <div className="relative min-h-0 flex-1 overflow-hidden">
-            <SimulatorCanvas
-              ir={ir}
-              room={roomEnvironment}
-              visualMode={visualMode}
-              selectedVoxelId={selectedVoxelId}
-              selectedObstacleId={selectedObstacleId}
-              showRoomBounds={showRoomBounds}
-              showObstacles={showObstacles}
-              showGrid={showGrid}
-              onSelectVoxel={handleSelectVoxel}
-              onSelectObstacle={handleSelectObstacle}
-              cameraTrigger={cameraTrigger}
-            />
-          </div>
-
-          {/* Minimal Bottom Status Bar */}
-          <footer className="flex h-8 shrink-0 items-center justify-between gap-4 border-t border-slate-800/90 bg-[#0b1120] px-4 text-[11px] text-slate-400">
-            <div className="min-w-0 truncate">
-              <span className="text-slate-500">Room: </span>
-              <span className="font-medium text-slate-200">
-                {roomEnvironment.name || roomEnvironment.id || 'Custom'}
-              </span>
-              <span className="mx-1.5 text-slate-600">·</span>
-              <span className="font-mono tabular-nums text-slate-400">
-                {roomEnvironment.dimensionsMm.x} × {roomEnvironment.dimensionsMm.y} ×{' '}
-                {roomEnvironment.dimensionsMm.z} mm
-              </span>
-            </div>
-
-            <div className="shrink-0 whitespace-nowrap font-mono">
-              {selectedVoxelId ? (
-                <span className="text-sky-400">
-                  Voxel: <strong className="font-semibold">{selectedVoxelId}</strong>
-                </span>
-              ) : selectedObstacleId ? (
-                <span className="text-amber-400">
-                  Obstacle: <strong className="font-semibold">{selectedObstacleId}</strong>
-                </span>
-              ) : (
-                <span className="text-slate-500">Click a voxel to inspect</span>
-              )}
-            </div>
-          </footer>
+      <main className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)_minmax(0,1fr)] lg:grid-cols-12 lg:grid-rows-1">
+        {/* Left: 3D viewport */}
+        <section className="min-h-0 min-w-0 lg:col-span-7">
+          <ViewportPanel
+            ir={ir}
+            room={room}
+            mode={mode}
+            selection={selection}
+            issues={issues}
+            thermal={thermal}
+            guides={guides}
+            cameraTrigger={cameraTrigger}
+            notice={notice}
+            onSelect={handleSelect}
+            onFit={fitCamera}
+          />
         </section>
 
-        {/* Right Column (~38%): Stacked DSL Editor (top) & 5-Gate Verification (bottom) */}
-        <aside className="flex min-h-0 w-[38%] min-w-[360px] flex-col border-l border-slate-800/90 bg-[#0b101c]">
-          <div className="min-h-0 h-[46%] border-b border-slate-800/90">
-            <CodeEditorPanel
-              code={dslCode}
-              onChangeCode={setDslCode}
-              onCompile={() => handleCompile(dslCode, roomEnvironment)}
-              isCompiling={isCompiling}
-              compileError={compileError}
+        {/* Right: DSL editor over verification inspector */}
+        <aside className="flex min-h-0 min-w-0 flex-col gap-2 border-l border-slate-800 bg-[#0b1020] p-2 lg:col-span-5">
+          <div className="min-h-0 basis-[42%]">
+            <DslEditorPanel
+              value={dsl}
               voxelCount={ir?.voxels.length ?? 0}
+              dirty={dsl !== compiledDsl}
+              failure={failure}
+              onChange={setDsl}
+              onCompile={handleCompile}
+              onQuickInsert={handleQuickInsert}
             />
           </div>
-
           <div className="min-h-0 flex-1">
-            <VerificationPanel
-              result={verificationResult}
+            <VerificationInspector
+              result={result}
               ir={ir}
-              selectedVoxelId={selectedVoxelId}
+              room={room}
+              failure={failure}
+              selectedVoxelId={selection?.kind === 'voxel' ? selection.id : null}
               onSelectVoxel={handleSelectVoxel}
             />
           </div>
         </aside>
       </main>
-
-      {/* Room Scan JSON & Dimensions Editor Modal */}
-      <RoomScanModal
-        room={roomEnvironment}
-        isOpen={isRoomScanOpen}
-        onClose={() => setIsRoomScanOpen(false)}
-        onSave={(updatedRoom) => {
-          setRoomEnvironment(updatedRoom);
-          handleCompile(dslCode, updatedRoom);
-        }}
-      />
     </div>
   );
 };
