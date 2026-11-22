@@ -313,6 +313,203 @@ export const MANIFEST_IO_GAMEPAD_CTRL: VoxelManifest = {
 };
 
 /**
+ * 7. vox.compute.arm-soc
+ * Unified low-TDP, high-efficiency ARM64 compute module scaling from Phone -> Laptop -> PC Workstation.
+ */
+export const MANIFEST_COMPUTE_ARM_SOC: VoxelManifest = {
+  id: 'vox.compute.arm-soc',
+  name: 'Unified ARM64 Compute SoC Module',
+  version: '1.0.0',
+  category: 'compute',
+  description:
+    'Low-TDP, high-efficiency ARM64 System-on-Chip voxel designed to scale seamlessly from passive mobile/laptop builds to multi-module desktop workstation clusters. Exposes dual Control Plane (I2C) and High-Speed Plane (PCIe/USB4) lanes on all mating faces.',
+  mechanical: {
+    dimensionsMm: { x: 150, y: 150, z: 150 },
+    massKg: 0.125,
+    maxCompressionLoadN: 750,
+    maxTensileLoadN: 420,
+    connectorType: 'snap-fit',
+    faces: 'all',
+  },
+  electrical: {
+    controlPlane: {
+      supported: true,
+      protocol: 'i2c',
+      faces: 'all',
+      passThrough: true,
+    },
+    highSpeedPlane: {
+      supported: true,
+      protocol: 'pcie',
+      faces: 'all',
+      isSource: true,
+      passThrough: true,
+    },
+    powerRails: {
+      computeRail: {
+        voltage: 5.0,
+        type: 'consumer',
+        maxPowerWatts: 10.0,
+      },
+    },
+  },
+  thermal: {
+    tdpWatts: 10.0,
+    passiveDissipationWatts: 6.0,
+  },
+  capabilities: [
+    'arm64-compute',
+    'unified-architecture',
+    'neural-acceleration',
+    'high-speed-routing',
+    'display-controller',
+    'pcie-usb4-host',
+  ],
+  metadata: {
+    architecture: 'ARM64',
+    nominalTdpWatts: 10,
+    scalableTiers: ['phone', 'laptop', 'workstation'],
+    highSpeedLanes: 'PCIe Gen4 / USB4',
+  },
+};
+
+/**
+ * 8. vox.device.phone-core
+ * Compact standalone-capable ARM Phone Core with dedicated/private onboard storage and internal battery.
+ */
+export const MANIFEST_DEVICE_PHONE_CORE: VoxelManifest = {
+  id: 'vox.device.phone-core',
+  name: 'Modular ARM Phone Core',
+  version: '1.0.0',
+  category: 'compute',
+  description:
+    'Standalone-capable modular ARM64 phone core integrating an efficient ARM SoC, internal mobile battery, and 256 GB dedicated private onboard UFS storage so it can undock from the lattice and run its own OS and personal data independently, or dock into Laptop/PC lattices with external NVMe storage.',
+  mechanical: {
+    dimensionsMm: { x: 150, y: 150, z: 150 },
+    massKg: 0.195,
+    maxCompressionLoadN: 700,
+    maxTensileLoadN: 380,
+    connectorType: 'snap-fit',
+    faces: 'all',
+  },
+  electrical: {
+    controlPlane: {
+      supported: true,
+      protocol: 'i2c',
+      faces: 'all',
+      passThrough: true,
+    },
+    highSpeedPlane: {
+      supported: true,
+      protocol: 'usb4',
+      faces: 'all',
+      isSource: true,
+      passThrough: true,
+    },
+    powerRails: {
+      computeRail: {
+        voltage: 5.0,
+        type: 'provider',
+        maxPowerWatts: 15.0,
+        isolated: true,
+      },
+    },
+  },
+  thermal: {
+    tdpWatts: 5.0,
+    passiveDissipationWatts: 6.0,
+  },
+  storage: {
+    capacityGb: 256,
+    scope: 'dedicated',
+    interface: 'ufs',
+    requiresHostHighSpeedLink: false,
+  },
+  capabilities: [
+    'arm64-compute',
+    'standalone-phone',
+    'dedicated-private-storage',
+    'integrated-mobile-battery',
+    'high-speed-routing',
+    'display-controller',
+    'usb4-host',
+  ],
+  metadata: {
+    architecture: 'ARM64',
+    dedicatedStorageGb: 256,
+    storageScope: 'dedicated',
+    standaloneCapable: true,
+    integratedBatteryWh: 18,
+    integratedDisplay: true,
+  },
+};
+
+/**
+ * 9. vox.storage.nvme-bay
+ * Hot-swappable modular secondary/external NVMe storage bay requiring a High-Speed Plane host link.
+ */
+export const MANIFEST_STORAGE_NVME_BAY: VoxelManifest = {
+  id: 'vox.storage.nvme-bay',
+  name: 'Modular NVMe Storage Bay 2TB',
+  version: '1.0.0',
+  category: 'storage',
+  description:
+    'Hot-swappable 2 TB modular NVMe storage bay enclosed in a passive aluminum thermal caddy. Provides expandable secondary storage for ARM Laptops, PC Workstations, and docked Phones over the High-Speed Plane (PCIe/USB4).',
+  mechanical: {
+    dimensionsMm: { x: 150, y: 150, z: 150 },
+    massKg: 0.14,
+    maxCompressionLoadN: 950,
+    maxTensileLoadN: 500,
+    connectorType: 'snap-fit',
+    faces: 'all',
+  },
+  electrical: {
+    controlPlane: {
+      supported: true,
+      protocol: 'i2c',
+      faces: 'all',
+      passThrough: true,
+    },
+    highSpeedPlane: {
+      supported: true,
+      protocol: 'pcie',
+      faces: 'all',
+      passThrough: true,
+    },
+    powerRails: {
+      computeRail: {
+        voltage: 5.0,
+        type: 'consumer',
+        maxPowerWatts: 4.0,
+      },
+    },
+  },
+  thermal: {
+    tdpWatts: 4.0,
+    passiveDissipationWatts: 4.5,
+  },
+  storage: {
+    capacityGb: 2048,
+    scope: 'modular',
+    interface: 'nvme-pcie',
+    requiresHostHighSpeedLink: true,
+  },
+  capabilities: [
+    'nvme-storage',
+    'hot-swappable',
+    'secondary-storage',
+    'pcie-usb4-endpoint',
+    'high-speed-routing',
+  ],
+  metadata: {
+    capacityGb: 2048,
+    storageScope: 'modular',
+    hotSwappable: true,
+    interface: 'PCIe Gen4 x4 / USB4',
+  },
+};
+
+/**
  * Standard starter manifest catalog array.
  */
 export const STARTER_MANIFESTS: readonly VoxelManifest[] = [
@@ -322,6 +519,9 @@ export const STARTER_MANIFESTS: readonly VoxelManifest[] = [
   MANIFEST_DISPLAY_OLED_6IN,
   MANIFEST_POWER_PD_100W,
   MANIFEST_IO_GAMEPAD_CTRL,
+  MANIFEST_COMPUTE_ARM_SOC,
+  MANIFEST_DEVICE_PHONE_CORE,
+  MANIFEST_STORAGE_NVME_BAY,
 ] as const;
 
 /**
@@ -383,7 +583,7 @@ export class VoxelRegistry {
 }
 
 /**
- * Factory creating a new registry populated with the 6 starter manifests.
+ * Factory creating a new registry populated with the 9 built-in hardware manifests.
  */
 export function createDefaultRegistry(): VoxelRegistry {
   return new VoxelRegistry(STARTER_MANIFESTS);

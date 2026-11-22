@@ -17,6 +17,7 @@ export const CATEGORY_STYLE: Record<VoxelCategory, CategoryStyle> = {
   display: { label: 'Display', hex: 0x1e293b, css: '#38bdf8', metalness: 0.2, roughness: 0.5 },
   power: { label: 'Battery', hex: 0x10b981, css: '#10b981', metalness: 0.25, roughness: 0.5 },
   io: { label: 'Controller', hex: 0xfb7185, css: '#fb7185', metalness: 0.2, roughness: 0.55 },
+  storage: { label: 'NVMe storage', hex: 0x06b6d4, css: '#06b6d4', metalness: 0.4, roughness: 0.38 },
 };
 
 export const CATEGORY_ORDER: readonly VoxelCategory[] = [
@@ -26,6 +27,7 @@ export const CATEGORY_ORDER: readonly VoxelCategory[] = [
   'display',
   'power',
   'io',
+  'storage',
 ] as const;
 
 export const OBSTACLE_DEFAULT_COLOR: Record<ObstacleType, string> = {

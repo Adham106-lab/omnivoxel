@@ -379,11 +379,241 @@ voxel heatsink_4 @ (7, 4, 5) {
   },
 };
 
+export const GALLERY_ARM_PHONE: GalleryItem = {
+  id: 'arm-modular-phone',
+  name: 'Modular ARM Phone (Standalone + Docked Storage)',
+  category: 'device',
+  description:
+    'Standalone-capable ARM64 Phone Core with 256 GB private onboard storage and integrated battery, shown with an optional hot-swappable 2 TB NVMe modular storage bay docked over USB4/PCIe.',
+  tags: ['device', 'arm', 'phone', 'standalone', 'storage', 'nvme'],
+  roomEnvironment: {
+    id: 'room-mobile-desk',
+    name: 'Compact Mobile Charging Pad',
+    dimensionsMm: { x: 1800, y: 1800, z: 1500 },
+    boundsMinMm: { x: -450, y: -450, z: -450 },
+    boundsMaxMm: { x: 1350, y: 1350, z: 1050 },
+    obstacles: [
+      {
+        id: 'mobile-desk-pad',
+        name: 'Wireless Charging Mat',
+        type: 'furniture',
+        boundsMinMm: { x: -350, y: -350, z: -350 },
+        boundsMaxMm: { x: 900, y: 900, z: -150 },
+        isFixed: true,
+        color: '#475569',
+      },
+    ],
+  },
+  dsl: `assembly "OmniVoxel-ARM-Phone" {
+  formFactor: "Modular ARM Phone"
+  architecture: "Unified ARM64 + Private Onboard Storage"
+}
+
+// Standalone ARM64 Phone Core (256 GB dedicated private storage + integrated battery)
+voxel phone_core @ (0, 0, 0) {
+  type: "vox.device.phone-core"
+  role: "standalone-mobile-host"
+}
+
+// Optional hot-swappable 2 TB modular NVMe storage bay over USB4/PCIe
+voxel nvme_dock @ (1, 0, 0) {
+  type: "vox.storage.nvme-bay"
+  role: "docked-external-storage"
+}`,
+  compile(registry = createDefaultRegistry()) {
+    const ast = parseDSL(this.dsl);
+    const ir = compileToIR(ast, registry);
+    return { ir, roomEnvironment: this.roomEnvironment };
+  },
+};
+
+export const GALLERY_ARM_LAPTOP: GalleryItem = {
+  id: 'arm-modular-laptop',
+  name: 'ARM Modular Laptop',
+  category: 'device',
+  description:
+    'Unified ARM64 clamshell laptop pairing a dockable ARM Phone Core (private OS/data) and ARM SoC co-processor with an OLED display, isolated 100W PD battery, input deck, 2 TB modular NVMe bay, and passive aluminum cooling.',
+  tags: ['device', 'arm', 'laptop', 'phone-core', 'storage', 'nvme'],
+  roomEnvironment: {
+    id: 'room-arm-studio',
+    name: 'ARM Studio Desk',
+    dimensionsMm: { x: 2600, y: 2600, z: 2200 },
+    boundsMinMm: { x: -600, y: -600, z: -600 },
+    boundsMaxMm: { x: 2000, y: 2000, z: 1600 },
+    obstacles: [
+      {
+        id: 'studio-desk',
+        name: 'Walnut Studio Desk',
+        type: 'furniture',
+        boundsMinMm: { x: -450, y: -450, z: -500 },
+        boundsMaxMm: { x: 1200, y: 1200, z: -200 },
+        isFixed: true,
+        color: '#64748b',
+      },
+    ],
+  },
+  dsl: `assembly "OmniVoxel-ARM-Book" {
+  formFactor: "ARM Modular Laptop"
+  architecture: "Phone-Docked Unified ARM64 Lattice"
+}
+
+// Docked ARM Phone Core (carries private OS & 256 GB dedicated onboard storage)
+voxel phone_core @ (0, 0, 0) {
+  type: "vox.device.phone-core"
+  role: "primary-arm-host"
+}
+
+// Scalable ARM64 Compute Co-Processor Tile
+voxel arm_soc @ (1, 0, 0) {
+  type: "vox.compute.arm-soc"
+  role: "arm-compute-booster"
+}
+
+// Primary OLED Display over High-Speed Plane
+voxel display @ (0, 1, 0) {
+  type: "vox.display.oled-6in"
+  role: "laptop-display"
+}
+
+// Hot-Swappable 2 TB Modular NVMe Storage Bay over PCIe/USB4
+voxel nvme_storage @ (1, 1, 0) {
+  type: "vox.storage.nvme-bay"
+  role: "modular-nvme-drive"
+}
+
+// Extended Isolated Dual-Rail Battery Pack
+voxel battery @ (0, -1, 0) {
+  type: "vox.power.pd-100w"
+  role: "laptop-battery"
+}
+
+// Keyboard & Trackpad Input Deck
+voxel keyboard @ (-1, -1, 0) {
+  type: "vox.io.gamepad-ctrl"
+  role: "input-deck"
+}
+
+// Passive Aluminum Structural Heatsink Frame
+voxel chassis_sink @ (-1, 0, 0) {
+  type: "vox.struct.alu-150"
+  role: "passive-thermal-chassis"
+}`,
+  compile(registry = createDefaultRegistry()) {
+    const ast = parseDSL(this.dsl);
+    const ir = compileToIR(ast, registry);
+    return { ir, roomEnvironment: this.roomEnvironment };
+  },
+};
+
+export const GALLERY_ARM_WORKSTATION: GalleryItem = {
+  id: 'arm-pc-workstation',
+  name: 'ARM Desktop / PC Workstation',
+  category: 'setup',
+  description:
+    'Multi-ARM desktop workstation docked on an engineering bench with dual unified ARM64 compute nodes, dual 2 TB modular NVMe storage bays (4 TB total), dual OLED monitors, 100W PD power hub, and twin aluminum chimney heatsinks.',
+  tags: ['setup', 'arm', 'workstation', 'pc', 'cluster', 'storage', 'nvme'],
+  roomEnvironment: {
+    id: 'room-arm-workstation-bay',
+    name: 'ARM Compute Engineering Bay',
+    dimensionsMm: { x: 3000, y: 3000, z: 2500 },
+    boundsMinMm: { x: 0, y: 0, z: 0 },
+    boundsMaxMm: { x: 3000, y: 3000, z: 2500 },
+    obstacles: [
+      {
+        id: 'arm-workstation-bench',
+        name: 'Modular Workstation Desk',
+        type: 'furniture',
+        boundsMinMm: { x: 300, y: 300, z: 0 },
+        boundsMaxMm: { x: 1900, y: 1300, z: 750 },
+        isFixed: true,
+        color: '#475569',
+      },
+      {
+        id: 'bay-back-wall',
+        name: 'Acoustic Studio Wall',
+        type: 'wall',
+        boundsMinMm: { x: 0, y: 0, z: 0 },
+        boundsMaxMm: { x: 3000, y: 150, z: 2500 },
+        isFixed: true,
+        color: '#334155',
+      },
+    ],
+  },
+  dsl: `assembly "OmniVoxel-ARM-Workstation" {
+  formFactor: "ARM Desktop / PC Workstation"
+  architecture: "Multi-ARM64 Cluster + Modular NVMe Array"
+}
+
+// Dual Unified ARM64 Compute Cluster (docked at bench height z = 5 * 150mm = 750mm)
+voxel arm_primary @ (4, 4, 5) {
+  type: "vox.compute.arm-soc"
+  role: "arm-cluster-primary"
+}
+
+voxel arm_secondary @ (5, 4, 5) {
+  type: "vox.compute.arm-soc"
+  role: "arm-cluster-secondary"
+}
+
+// Dual 2 TB Hot-Swappable Modular NVMe Storage Array (4 TB total over PCIe)
+voxel nvme_bay_a @ (4, 3, 5) {
+  type: "vox.storage.nvme-bay"
+  role: "nvme-array-slot-a"
+}
+
+voxel nvme_bay_b @ (5, 3, 5) {
+  type: "vox.storage.nvme-bay"
+  role: "nvme-array-slot-b"
+}
+
+// Dual OLED Monitors over High-Speed Plane
+voxel monitor_left @ (4, 5, 5) {
+  type: "vox.display.oled-6in"
+  role: "primary-workstation-display"
+}
+
+voxel monitor_right @ (5, 5, 5) {
+  type: "vox.display.oled-6in"
+  role: "secondary-workstation-display"
+}
+
+// Isolated 100W USB-PD Power Hub
+voxel power_hub @ (3, 4, 5) {
+  type: "vox.power.pd-100w"
+  role: "workstation-power-hub"
+}
+
+// Peripheral Macro & Input Deck
+voxel input_deck @ (3, 3, 5) {
+  type: "vox.io.gamepad-ctrl"
+  role: "workstation-input-deck"
+}
+
+// Twin Dorsal Aluminum Heatsink Towers
+voxel heatsink_primary @ (4, 4, 6) {
+  type: "vox.struct.alu-150"
+  role: "primary-thermal-chimney"
+}
+
+voxel heatsink_secondary @ (5, 4, 6) {
+  type: "vox.struct.alu-150"
+  role: "secondary-thermal-chimney"
+}`,
+  compile(registry = createDefaultRegistry()) {
+    const ast = parseDSL(this.dsl);
+    const ir = compileToIR(ast, registry);
+    return { ir, roomEnvironment: this.roomEnvironment };
+  },
+};
+
 export const GALLERY_ITEMS: readonly GalleryItem[] = [
   GALLERY_HANDHELD_CONSOLE,
   GALLERY_MODULAR_LAPTOP,
   GALLERY_DESK_WORKSTATION,
   GALLERY_LIVING_ROOM_UNIT,
+  GALLERY_ARM_PHONE,
+  GALLERY_ARM_LAPTOP,
+  GALLERY_ARM_WORKSTATION,
 ] as const;
 
 export function getGalleryItem(id: string): GalleryItem | undefined {

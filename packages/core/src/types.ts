@@ -41,7 +41,8 @@ export type VoxelCategory =
   | 'compute'
   | 'display'
   | 'power'
-  | 'io';
+  | 'io'
+  | 'storage';
 
 /**
  * Control plane bus protocols (low-speed / management / telemetry).

@@ -69,4 +69,53 @@ describe('Gallery Items Catalog', () => {
     expect(result.errors).toEqual([]);
     expect(result.passed).toBe(true);
   });
+
+  it('includes and verifies Modular ARM Phone preset (dedicated onboard + docked NVMe)', () => {
+    const item = getGalleryItem('arm-modular-phone');
+    expect(item).toBeDefined();
+
+    const { ir, roomEnvironment } = item!.compile(registry);
+    expect(ir.voxels.some((v) => v.manifest.id === 'vox.device.phone-core')).toBe(true);
+    expect(ir.voxels.some((v) => v.manifest.id === 'vox.storage.nvme-bay')).toBe(true);
+    expect(ir.metrics.dedicatedStorageGb).toBe(256);
+    expect(ir.metrics.modularStorageGb).toBe(2048);
+
+    const result = verifyAssembly(ir, roomEnvironment);
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toEqual([]);
+    expect(result.passed).toBe(true);
+  });
+
+  it('includes and verifies ARM Modular Laptop preset cleanly across all 5 gates', () => {
+    const item = getGalleryItem('arm-modular-laptop');
+    expect(item).toBeDefined();
+
+    const { ir, roomEnvironment } = item!.compile(registry);
+    expect(ir.voxels.some((v) => v.manifest.id === 'vox.device.phone-core')).toBe(true);
+    expect(ir.voxels.some((v) => v.manifest.id === 'vox.compute.arm-soc')).toBe(true);
+    expect(ir.voxels.some((v) => v.manifest.id === 'vox.storage.nvme-bay')).toBe(true);
+    expect(ir.metrics.totalStorageGb).toBe(2304);
+
+    const result = verifyAssembly(ir, roomEnvironment);
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toEqual([]);
+    expect(result.passed).toBe(true);
+  });
+
+  it('includes and verifies ARM Desktop / PC Workstation preset with multi-ARM cluster & NVMe array', () => {
+    const item = getGalleryItem('arm-pc-workstation');
+    expect(item).toBeDefined();
+
+    const { ir, roomEnvironment } = item!.compile(registry);
+    const armNodes = ir.voxels.filter((v) => v.manifest.id === 'vox.compute.arm-soc');
+    const storageBays = ir.voxels.filter((v) => v.manifest.id === 'vox.storage.nvme-bay');
+    expect(armNodes.length).toBeGreaterThanOrEqual(2);
+    expect(storageBays.length).toBeGreaterThanOrEqual(2);
+    expect(ir.metrics.modularStorageGb).toBe(4096);
+
+    const result = verifyAssembly(ir, roomEnvironment);
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toEqual([]);
+    expect(result.passed).toBe(true);
+  });
 });

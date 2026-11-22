@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   compileToIR,
   createDefaultRegistry,
@@ -9,6 +9,7 @@ import {
   snapToRoom,
   verifyAssembly,
   type DockToFurnitureOptions,
+  type Coord3D,
   type EnvironmentObstacle,
   type GalleryItem,
   type PlacementResult,
@@ -24,7 +25,13 @@ import { TopBar } from './components/TopBar';
 import { VerificationInspector } from './components/VerificationInspector';
 import { ViewportPanel } from './components/ViewportPanel';
 import { buildIssueMap } from './lib/diagnostics';
-import { insertQuickVoxel, rewriteDslCoordinates, type QuickInsertKey } from './lib/layout';
+import {
+  insertQuickVoxel,
+  isCellFree,
+  moveVoxelInDsl,
+  rewriteDslCoordinates,
+  type QuickInsertKey,
+} from './lib/layout';
 import { analyzeThermal } from './lib/thermal';
 import type { CompileFailure, Guides, Selection, VisualMode } from './types';
 
@@ -74,6 +81,10 @@ export const App: React.FC = () => {
 
   const ir = compiled?.ir ?? null;
   const result = compiled?.result ?? null;
+
+  // Always-current document snapshot, so rapid drag events never act on a stale render
+  const latest = useRef({ dsl, compiled, room });
+  latest.current = { dsl, compiled, room };
 
   // Derived data (memoised so the 3D scene only rebuilds when the IR / room changes)
   const issues = useMemo(() => buildIssueMap(result), [result]);
@@ -184,6 +195,45 @@ export const App: React.FC = () => {
     [runPlacement, dockTarget]
   );
 
+  // --- Interactive voxel move (axis-handle drag, nudge buttons, arrow keys) ----
+  /**
+   * Moves one voxel to a lattice cell: rewrites its DSL header, recompiles and re-runs
+   * all five gates. Returns false (and leaves everything untouched) if the cell is taken.
+   */
+  const handleMoveVoxel = useCallback(
+    (id: string, coord: Coord3D): boolean => {
+      const { dsl: currentDsl, compiled: current, room: currentRoom } = latest.current;
+      const voxel = current?.ir.getVoxel(id);
+      if (!current || !voxel) return false;
+
+      const c = voxel.coord;
+      if (c.x === coord.x && c.y === coord.y && c.z === coord.z) return true;
+
+      if (!isCellFree(current.ir, id, coord)) {
+        setNotice(`Cell (${coord.x}, ${coord.y}, ${coord.z}) is occupied`);
+        return false;
+      }
+
+      try {
+        const nextDsl = moveVoxelInDsl(currentDsl, id, coord);
+        const next = compileSource(nextDsl, currentRoom);
+        latest.current = { dsl: nextDsl, compiled: next, room: currentRoom };
+        setDsl(nextDsl);
+        commit(next, nextDsl);
+        const errors = next.result.errors.length;
+        setNotice(
+          `${id} → (${coord.x}, ${coord.y}, ${coord.z}) · ` +
+            (errors === 0 ? 'all gates pass' : `${errors} gate error${errors === 1 ? '' : 's'}`)
+        );
+        return true;
+      } catch (e) {
+        setFailure(toFailure(e));
+        return false;
+      }
+    },
+    [commit]
+  );
+
   // --- Editor helpers --------------------------------------------------------
   const handleQuickInsert = useCallback(
     (key: QuickInsertKey) => setDsl((current) => insertQuickVoxel(current, key, registry)),
@@ -236,6 +286,7 @@ export const App: React.FC = () => {
             notice={notice}
             onSelect={handleSelect}
             onFit={fitCamera}
+            onMoveVoxel={handleMoveVoxel}
           />
         </section>
 

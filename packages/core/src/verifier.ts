@@ -253,7 +253,55 @@ export class VoxelVerifier {
     const gate = 2;
     const gateName = 'Dual-Plane Bus';
 
-    // 2A. High-Speed Plane path between compute and display
+    // Build shared High-Speed Plane and Control Plane adjacency graphs
+    const hsAdjacency = new Map<string, string[]>();
+    const cpAdjacency = new Map<string, string[]>();
+    for (const v of ir.voxels) {
+      hsAdjacency.set(v.id, []);
+      cpAdjacency.set(v.id, []);
+    }
+    for (const link of ir.links) {
+      if (link.highSpeedPlane.connected) {
+        hsAdjacency.get(link.sourceId)?.push(link.targetId);
+        hsAdjacency.get(link.targetId)?.push(link.sourceId);
+      }
+      if (link.controlPlane.connected) {
+        cpAdjacency.get(link.sourceId)?.push(link.targetId);
+        cpAdjacency.get(link.targetId)?.push(link.sourceId);
+      }
+    }
+
+    const canReachAny = (
+      startId: string,
+      targetIds: Set<string>,
+      adjacency: Map<string, string[]>,
+      requirePassThrough: (v: VoxelInstance) => boolean
+    ): boolean => {
+      const visited = new Set<string>([startId]);
+      const queue: string[] = [startId];
+      while (queue.length > 0) {
+        const curr = queue.shift()!;
+        if (curr !== startId && targetIds.has(curr)) return true;
+        const currVoxel = ir.getVoxel(curr);
+        if (curr !== startId && currVoxel && !requirePassThrough(currVoxel)) {
+          continue;
+        }
+        const neighbors = adjacency.get(curr) || [];
+        for (const n of neighbors) {
+          if (!visited.has(n)) {
+            visited.add(n);
+            queue.push(n);
+          }
+        }
+      }
+      return false;
+    };
+
+    const hsPassThrough = (v: VoxelInstance): boolean =>
+      v.manifest.electrical.highSpeedPlane.passThrough !== false;
+    const cpPassThrough = (v: VoxelInstance): boolean =>
+      v.manifest.electrical.controlPlane.passThrough !== false;
+
     const displayVoxels = ir.voxels.filter(
       (v) =>
         v.manifest.category === 'display' ||
@@ -262,9 +310,12 @@ export class VoxelVerifier {
     const computeVoxels = ir.voxels.filter(
       (v) =>
         v.manifest.category === 'compute' ||
-        v.manifest.electrical.highSpeedPlane.isSource
+        v.manifest.electrical.highSpeedPlane.isSource ||
+        v.manifest.id === 'vox.device.phone-core'
     );
+    const computeIds = new Set(computeVoxels.map((c) => c.id));
 
+    // 2A. High-Speed Plane path between compute and display
     if (displayVoxels.length > 0) {
       if (computeVoxels.length === 0) {
         for (const d of displayVoxels) {
@@ -275,46 +326,12 @@ export class VoxelVerifier {
             message: `Display voxel "${d.id}" requires a High-Speed Plane video stream, but no compute voxel exists in the assembly.`,
             voxelIds: [d.id],
             suggestedFix:
-              'Add a compute voxel (such as vox.compute.gpu-module) to drive the display.',
+              'Add a compute voxel (such as vox.compute.arm-soc, vox.device.phone-core, or vox.compute.gpu-module) to drive the display.',
           });
         }
       } else {
-        // Build High-Speed graph
-        const hsAdjacency = new Map<string, string[]>();
-        for (const v of ir.voxels) {
-          hsAdjacency.set(v.id, []);
-        }
-        for (const link of ir.links) {
-          if (link.highSpeedPlane.connected) {
-            hsAdjacency.get(link.sourceId)?.push(link.targetId);
-            hsAdjacency.get(link.targetId)?.push(link.sourceId);
-          }
-        }
-
-        const computeIds = new Set(computeVoxels.map((c) => c.id));
-
         for (const d of displayVoxels) {
-          // BFS from display to see if any compute voxel is reachable
-          const visited = new Set<string>();
-          const queue: string[] = [d.id];
-          visited.add(d.id);
-          let reachableCompute = false;
-
-          while (queue.length > 0) {
-            const curr = queue.shift()!;
-            if (computeIds.has(curr)) {
-              reachableCompute = true;
-              break;
-            }
-            const neighbors = hsAdjacency.get(curr) || [];
-            for (const n of neighbors) {
-              if (!visited.has(n)) {
-                visited.add(n);
-                queue.push(n);
-              }
-            }
-          }
-
+          const reachableCompute = canReachAny(d.id, computeIds, hsAdjacency, hsPassThrough);
           if (!reachableCompute) {
             diagnostics.push({
               gate,
@@ -330,7 +347,135 @@ export class VoxelVerifier {
       }
     }
 
-    // 2B. Control Plane (I2C) bus distance warning
+    // 2B. Modular Storage High-Speed Plane validation & Phone Core storage readiness
+    const storageVoxels = ir.voxels.filter(
+      (v) =>
+        v.manifest.category === 'storage' ||
+        v.manifest.storage?.requiresHostHighSpeedLink === true
+    );
+    const mountedStorageIds = new Set<string>();
+
+    if (storageVoxels.length > 0) {
+      if (computeVoxels.length === 0) {
+        for (const s of storageVoxels) {
+          diagnostics.push({
+            gate,
+            gateName,
+            severity: 'error',
+            message: `Modular storage voxel "${s.id}" requires a High-Speed Plane (PCIe/USB4) link to a compute or phone-core host, but no host voxel exists in the assembly.`,
+            voxelIds: [s.id],
+            suggestedFix:
+              'Add a compute or phone-core host (vox.compute.arm-soc, vox.device.phone-core, or vox.compute.gpu-module) connected via the High-Speed Plane.',
+            metadata: { storageScope: 'modular', missingHost: true },
+          });
+        }
+      } else {
+        for (const s of storageVoxels) {
+          const hsReachable = canReachAny(s.id, computeIds, hsAdjacency, hsPassThrough);
+          if (hsReachable) {
+            mountedStorageIds.add(s.id);
+            continue;
+          }
+
+          const cpReachable = canReachAny(s.id, computeIds, cpAdjacency, cpPassThrough);
+          if (cpReachable) {
+            diagnostics.push({
+              gate,
+              gateName,
+              severity: 'error',
+              message: `Modular storage voxel "${s.id}" is only connected via the Control Plane (I2C/telemetry) and has no High-Speed Plane (PCIe/USB4) path to a compute or phone-core host.`,
+              voxelIds: [s.id],
+              suggestedFix: `Place "${s.id}" adjacent to a compute/phone-core host or route through High-Speed Plane pass-through modules instead of structural-only spacers.`,
+              metadata: { storageScope: 'modular', controlPlaneOnly: true },
+            });
+          } else {
+            diagnostics.push({
+              gate,
+              gateName,
+              severity: 'error',
+              message: `Modular storage voxel "${s.id}" is disconnected from the High-Speed Plane and cannot mount to any compute or phone-core host.`,
+              voxelIds: [s.id],
+              suggestedFix: `Dock "${s.id}" directly onto a compute or phone-core host (e.g. vox.compute.arm-soc or vox.device.phone-core) with High-Speed Plane support.`,
+              metadata: { storageScope: 'modular', controlPlaneOnly: false },
+            });
+          }
+        }
+      }
+    }
+
+    // Standalone-capable Phone Core private onboard storage vs. docked NVMe expansion
+    const phoneCores = ir.voxels.filter(
+      (v) =>
+        v.manifest.id === 'vox.device.phone-core' ||
+        v.manifest.storage?.scope === 'dedicated'
+    );
+    for (const phone of phoneCores) {
+      const dedicatedGb =
+        phone.manifest.storage?.capacityGb ??
+        (typeof phone.manifest.metadata?.dedicatedStorageGb === 'number'
+          ? phone.manifest.metadata.dedicatedStorageGb
+          : 0);
+
+      if (dedicatedGb <= 0) {
+        diagnostics.push({
+          gate,
+          gateName,
+          severity: 'warning',
+          message: `Phone core "${phone.id}" declares no dedicated onboard storage capacity and may not boot standalone when undocked.`,
+          voxelIds: [phone.id],
+          suggestedFix:
+            'Configure dedicated onboard storage on the phone core manifest or use vox.device.phone-core.',
+        });
+        continue;
+      }
+
+      // Compute modular NVMe storage reachable from this specific phone core over High-Speed Plane
+      const phoneIdSet = new Set([phone.id]);
+      const reachableStorage = storageVoxels.filter(
+        (s) =>
+          mountedStorageIds.has(s.id) &&
+          canReachAny(s.id, phoneIdSet, hsAdjacency, hsPassThrough)
+      );
+      const expandedGb = reachableStorage.reduce(
+        (sum, s) => sum + (s.manifest.storage?.capacityGb ?? 0),
+        0
+      );
+
+      if (expandedGb > 0) {
+        diagnostics.push({
+          gate,
+          gateName,
+          severity: 'info',
+          message: `Phone core "${phone.id}" is standalone-ready with ${dedicatedGb} GB private onboard storage plus ${expandedGb} GB mounted modular NVMe storage (${dedicatedGb + expandedGb} GB total via High-Speed Plane).`,
+          voxelIds: [phone.id, ...reachableStorage.map((s) => s.id)],
+          metadata: {
+            storageScope: 'hybrid',
+            standaloneReady: true,
+            dedicatedStorageGb: dedicatedGb,
+            mountedModularStorageGb: expandedGb,
+            totalAvailableStorageGb: dedicatedGb + expandedGb,
+            mountedStorageIds: reachableStorage.map((s) => s.id),
+          },
+        });
+      } else {
+        diagnostics.push({
+          gate,
+          gateName,
+          severity: 'info',
+          message: `Phone core "${phone.id}" is standalone-ready with ${dedicatedGb} GB dedicated private onboard storage (no external lattice storage required).`,
+          voxelIds: [phone.id],
+          metadata: {
+            storageScope: 'dedicated',
+            standaloneReady: true,
+            dedicatedStorageGb: dedicatedGb,
+            mountedModularStorageGb: 0,
+            totalAvailableStorageGb: dedicatedGb,
+          },
+        });
+      }
+    }
+
+    // 2C. Control Plane (I2C) bus distance warning
     // Compute max shortest-path distance between communicating I2C nodes
     const i2cNodes = ir.voxels.filter(
       (v) =>

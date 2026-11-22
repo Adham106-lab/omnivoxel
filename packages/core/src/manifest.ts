@@ -98,6 +98,20 @@ export interface ThermalSpec {
 }
 
 /**
+ * Storage specification for modules providing dedicated onboard or modular external storage.
+ */
+export interface StorageSpec {
+  /** Storage capacity in gigabytes (GB) */
+  capacityGb: number;
+  /** Private onboard storage (standalone-ready) vs. hot-swappable modular lattice storage */
+  scope: 'dedicated' | 'modular';
+  /** Underlying storage interface */
+  interface: 'ufs' | 'nvme-pcie' | 'usb4-nvme';
+  /** True when the module requires a High-Speed Plane (PCIe/USB4) host link to mount */
+  requiresHostHighSpeedLink?: boolean;
+}
+
+/**
  * Full Voxel Manifest schema representing a standardized modular hardware block.
  */
 export interface VoxelManifest {
@@ -117,6 +131,8 @@ export interface VoxelManifest {
   electrical: ElectricalSpec;
   /** Thermal dissipation & generation properties */
   thermal: ThermalSpec;
+  /** Optional dedicated onboard or modular external storage specification */
+  storage?: StorageSpec;
   /** Functional capability tags */
   capabilities: string[];
   /** Optional extensible metadata */

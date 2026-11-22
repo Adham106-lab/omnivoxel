@@ -1,8 +1,10 @@
 import {
   FACE_DELTAS,
   parseDSL,
+  type Coord3D,
   type Face,
   type VoxelCategory,
+  type VoxelIR,
   type VoxelInstance,
   type VoxelRegistry,
 } from '@omnivoxel/core';
@@ -16,13 +18,29 @@ function escapeRegExp(value: string): string {
  * (snap-to-room / dock-to-furniture) are reflected in the editor while keeping
  * the user's comments, formatting and ordering intact.
  */
-export function rewriteDslCoordinates(dsl: string, voxels: readonly VoxelInstance[]): string {
+export function rewriteDslCoordinates(
+  dsl: string,
+  voxels: ReadonlyArray<Pick<VoxelInstance, 'id' | 'coord'>>
+): string {
   let next = dsl;
   for (const v of voxels) {
     const pattern = new RegExp(`(voxel\\s+${escapeRegExp(v.id)}\\s+@\\s*)\\([^)]*\\)`);
     next = next.replace(pattern, `$1(${v.coord.x}, ${v.coord.y}, ${v.coord.z})`);
   }
   return next;
+}
+
+/** Moves a single voxel declaration to a new lattice cell, leaving the rest of the DSL untouched. */
+export function moveVoxelInDsl(dsl: string, id: string, coord: Coord3D): string {
+  return rewriteDslCoordinates(dsl, [{ id, coord }]);
+}
+
+/** True when no *other* voxel already occupies `coord`. */
+export function isCellFree(ir: VoxelIR, id: string, coord: Coord3D): boolean {
+  return !ir.voxels.some(
+    (v) =>
+      v.id !== id && v.coord.x === coord.x && v.coord.y === coord.y && v.coord.z === coord.z
+  );
 }
 
 export type QuickInsertKey = 'gpu' | 'oled' | 'battery' | 'heatsink';

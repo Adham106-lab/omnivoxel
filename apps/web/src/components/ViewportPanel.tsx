@@ -1,9 +1,12 @@
-import React from 'react';
-import type { RoomEnvironment, VoxelIR } from '@omnivoxel/core';
+import React, { useEffect, useMemo } from 'react';
+import type { Coord3D, RoomEnvironment, VoxelIR } from '@omnivoxel/core';
 import type { Guides, IssueSeverity, Selection, VisualMode } from '../types';
 import type { VoxelThermal } from '../lib/thermal';
 import { THERMAL_GRADIENT_CSS } from '../lib/thermal';
 import { BUS_COLORS, CATEGORY_ORDER, CATEGORY_STYLE } from '../lib/theme';
+import { planAssembly } from '../lib/assembly';
+import { useAssemblyPlayback } from '../lib/useAssemblyPlayback';
+import { AssemblyPlaybar } from './AssemblyPlaybar';
 import { SceneCanvas } from './SceneCanvas';
 import { CloseIcon, FitIcon } from './icons';
 
@@ -19,6 +22,8 @@ interface ViewportPanelProps {
   notice: string | null;
   onSelect: (selection: Selection) => void;
   onFit: () => void;
+  /** Applies a lattice move (DSL rewrite → recompile → 5-gate verify). Returns true if applied. */
+  onMoveVoxel: (id: string, coord: Coord3D) => boolean;
 }
 
 const Dot: React.FC<{ color: string }> = ({ color }) => (
@@ -93,6 +98,40 @@ const SelectionChip: React.FC<{
   );
 };
 
+// ------------------------------------------------------------------------ nudge pad
+
+const NUDGES: ReadonlyArray<{ label: string; axis: 'x' | 'y' | 'z'; delta: 1 | -1; hint: string }> = [
+  { label: '−X', axis: 'x', delta: -1, hint: '←' },
+  { label: '+X', axis: 'x', delta: 1, hint: '→' },
+  { label: '−Y', axis: 'y', delta: -1, hint: '↓' },
+  { label: '+Y', axis: 'y', delta: 1, hint: '↑' },
+  { label: '−Z', axis: 'z', delta: -1, hint: 'PgDn' },
+  { label: '+Z', axis: 'z', delta: 1, hint: 'PgUp' },
+];
+
+const AXIS_TEXT: Record<'x' | 'y' | 'z', string> = {
+  x: 'text-red-300',
+  y: 'text-emerald-300',
+  z: 'text-sky-300',
+};
+
+const NudgePad: React.FC<{ onNudge: (axis: 'x' | 'y' | 'z', delta: 1 | -1) => void }> = ({ onNudge }) => (
+  <div className="pointer-events-auto inline-flex items-center gap-1 rounded-md border border-slate-700/80 bg-[#0b1020]/90 px-1.5 py-1 shadow-lg backdrop-blur">
+    <span className="mr-0.5 text-[10px] uppercase tracking-wide text-slate-500">Move</span>
+    {NUDGES.map((n) => (
+      <button
+        key={n.label}
+        type="button"
+        onClick={() => onNudge(n.axis, n.delta)}
+        title={`Move one cell ${n.label} (${n.hint}) — or drag an axis arrow in the view`}
+        className={`h-5 min-w-[1.6rem] rounded border border-slate-700/80 px-1 font-mono text-[10px] hover:border-slate-500 hover:bg-slate-800 ${AXIS_TEXT[n.axis]}`}
+      >
+        {n.label}
+      </button>
+    ))}
+  </div>
+);
+
 // ------------------------------------------------------------------------ legend
 
 const Legend: React.FC<{ mode: VisualMode }> = ({ mode }) => {
@@ -106,6 +145,17 @@ const Legend: React.FC<{ mode: VisualMode }> = ({ mode }) => {
               {CATEGORY_STYLE[c].label}
             </li>
           ))}
+          <li className="col-span-2 mt-0.5 flex items-center gap-3 whitespace-nowrap border-t border-slate-800 pt-1 text-slate-400">
+            <span className="flex items-center gap-1.5">
+              <Dot color={BUS_COLORS.control.css} /> Control link
+            </span>
+            <span className="flex items-center gap-1.5">
+              <Dot color={BUS_COLORS.highSpeed.css} /> High-speed
+            </span>
+            <span className="flex items-center gap-1.5">
+              <Dot color="#fbbf24" /> Pivot axis
+            </span>
+          </li>
         </ul>
       )}
 
@@ -152,7 +202,46 @@ export const ViewportPanel: React.FC<ViewportPanelProps> = ({
   notice,
   onSelect,
   onFit,
+  onMoveVoxel,
 }) => {
+  const plan = useMemo(() => (ir && ir.voxels.length > 0 ? planAssembly(ir) : null), [ir]);
+  const playback = useAssemblyPlayback(plan?.steps.length ?? 0);
+  const assembly = useMemo(() => ({ plan, progress: playback.progress }), [plan, playback.progress]);
+
+  // Editing is only offered on the finished lattice
+  const selectedVoxel = selection?.kind === 'voxel' ? ir?.getVoxel(selection.id) ?? null : null;
+  const editable = playback.complete && selectedVoxel !== null;
+
+  const nudge = (axis: 'x' | 'y' | 'z', delta: 1 | -1) => {
+    if (!selectedVoxel) return;
+    onMoveVoxel(selectedVoxel.id, { ...selectedVoxel.coord, [axis]: selectedVoxel.coord[axis] + delta });
+  };
+
+  // Keyboard nudging: ←/→ = X, ↓/↑ = Y, PgDn/PgUp = Z
+  useEffect(() => {
+    if (!editable) return;
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const map: Record<string, ['x' | 'y' | 'z', 1 | -1]> = {
+        ArrowLeft: ['x', -1],
+        ArrowRight: ['x', 1],
+        ArrowDown: ['y', -1],
+        ArrowUp: ['y', 1],
+        PageDown: ['z', -1],
+        PageUp: ['z', 1],
+      };
+      const hit = map[e.key];
+      if (!hit) return;
+      e.preventDefault();
+      nudge(hit[0], hit[1]);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // nudge closes over the selected voxel; re-bind whenever it changes
+  }, [editable, selectedVoxel]);
+
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col bg-[#090d16]">
       <div className="relative min-h-0 flex-1 overflow-hidden">
@@ -165,12 +254,15 @@ export const ViewportPanel: React.FC<ViewportPanelProps> = ({
           thermal={thermal}
           guides={guides}
           cameraTrigger={cameraTrigger}
+          assembly={assembly}
+          editable={editable}
+          onMoveVoxel={onMoveVoxel}
           onSelect={onSelect}
         />
 
         {/* Top overlay row: selection chip (left) + fit button (right). Never blocks the canvas. */}
         <div className="pointer-events-none absolute inset-x-3 top-3 flex items-start justify-between gap-2">
-          <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 flex-1 flex-col items-start gap-1.5">
             {selection && (
               <SelectionChip
                 ir={ir}
@@ -180,6 +272,7 @@ export const ViewportPanel: React.FC<ViewportPanelProps> = ({
                 onClear={() => onSelect(null)}
               />
             )}
+            {editable && <NudgePad onNudge={nudge} />}
           </div>
           <button
             type="button"
@@ -197,6 +290,8 @@ export const ViewportPanel: React.FC<ViewportPanelProps> = ({
         </div>
       </div>
 
+      {plan && <AssemblyPlaybar plan={plan} playback={playback} />}
+
       {/* Minimal bottom status strip */}
       <footer className="flex h-7 shrink-0 items-center justify-between gap-4 border-t border-slate-800 bg-[#0b1020] px-3 text-[11px] text-slate-400">
         <div className="min-w-0 truncate">
@@ -210,7 +305,11 @@ export const ViewportPanel: React.FC<ViewportPanelProps> = ({
           {notice ? (
             <span className="text-sky-300">{notice}</span>
           ) : (
-            <span className="text-slate-500">Click a voxel or furniture item to inspect</span>
+            <span className="text-slate-500">
+              {editable
+                ? 'Drag an axis arrow, or use ←→↑↓ PgUp/PgDn, to move the voxel'
+                : 'Click a voxel or furniture item to inspect'}
+            </span>
           )}
         </div>
       </footer>

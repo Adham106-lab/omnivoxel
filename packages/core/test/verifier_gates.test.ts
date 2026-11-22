@@ -127,6 +127,109 @@ describe('OmniVoxel 5-Gate Deterministic Verifier', () => {
       ).toBe(true);
       expect(gate2Warnings[0].suggestedFix).toContain('CAN-FD');
     });
+
+    it('passes when modular NVMe storage connects to ARM SoC via High-Speed Plane', () => {
+      const dsl = `
+        voxel soc @ (0, 0, 0) type="vox.compute.arm-soc"
+        voxel nvme @ (1, 0, 0) type="vox.storage.nvme-bay"
+        voxel pwr @ (0, -1, 0) type="vox.power.pd-100w"
+        voxel sink @ (-1, 0, 0) type="vox.struct.alu-150"
+      `;
+      const ir = compileToIR(parseDSL(dsl), registry);
+      const result = verifyAssembly(ir);
+
+      expect(result.passed).toBe(true);
+      expect(result.errors.filter((e) => e.gate === 2)).toHaveLength(0);
+      expect(ir.metrics.modularStorageGb).toBe(2048);
+    });
+
+    it('fails Gate 2 when modular NVMe storage is only connected via Control Plane (structural spacer)', () => {
+      // vox.struct.alu-150 bridges I2C control plane, but NOT High-Speed PCIe/USB4
+      const dsl = `
+        voxel soc @ (0, 0, 0) type="vox.compute.arm-soc"
+        voxel spacer @ (1, 0, 0) type="vox.struct.alu-150"
+        voxel nvme @ (2, 0, 0) type="vox.storage.nvme-bay"
+        voxel pwr @ (0, -1, 0) type="vox.power.pd-100w"
+      `;
+      const ir = compileToIR(parseDSL(dsl), registry);
+      const result = verifyAssembly(ir);
+
+      const gate2Errors = result.errors.filter((e) => e.gate === 2);
+      expect(
+        gate2Errors.some((e) => e.message.includes('only connected via the Control Plane'))
+      ).toBe(true);
+      expect(gate2Errors[0].voxelIds).toContain('nvme');
+      expect(gate2Errors[0].suggestedFix).toContain('High-Speed Plane');
+    });
+
+    it('fails Gate 2 when modular NVMe storage has no compute or phone-core host', () => {
+      const dsl = `
+        voxel nvme @ (0, 0, 0) type="vox.storage.nvme-bay"
+        voxel pwr @ (1, 0, 0) type="vox.power.pd-100w"
+      `;
+      const ir = compileToIR(parseDSL(dsl), registry);
+      const result = verifyAssembly(ir);
+
+      const gate2Errors = result.errors.filter((e) => e.gate === 2);
+      expect(
+        gate2Errors.some((e) => e.message.includes('no host voxel exists'))
+      ).toBe(true);
+      expect(gate2Errors[0].suggestedFix).toContain('vox.compute.arm-soc');
+    });
+
+    it('fails Gate 2 when modular NVMe storage is physically disconnected from its host', () => {
+      const dsl = `
+        voxel phone @ (0, 0, 0) type="vox.device.phone-core"
+        voxel nvme @ (4, 0, 0) type="vox.storage.nvme-bay"
+      `;
+      const ir = compileToIR(parseDSL(dsl), registry);
+      const result = verifyAssembly(ir);
+
+      const gate2Errors = result.errors.filter((e) => e.gate === 2);
+      expect(
+        gate2Errors.some((e) => e.message.includes('disconnected from the High-Speed Plane'))
+      ).toBe(true);
+      expect(gate2Errors[0].voxelIds).toContain('nvme');
+    });
+
+    it('passes all 5 gates for a standalone Phone Core using private onboard storage and expands cleanly when docked with NVMe', () => {
+      const standaloneIr = compileToIR(
+        parseDSL(`voxel phone @ (0, 0, 0) type="vox.device.phone-core"`),
+        registry
+      );
+      const standaloneResult = verifyAssembly(standaloneIr);
+      expect(standaloneResult.passed).toBe(true);
+      expect(standaloneResult.errors).toHaveLength(0);
+      expect(standaloneResult.warnings).toHaveLength(0);
+      expect(standaloneIr.metrics.dedicatedStorageGb).toBe(256);
+      expect(standaloneIr.metrics.modularStorageGb).toBe(0);
+
+      const standaloneInfo = standaloneResult.diagnostics.find(
+        (d) => d.gate === 2 && d.severity === 'info'
+      );
+      expect(standaloneInfo?.metadata?.standaloneReady).toBe(true);
+      expect(standaloneInfo?.metadata?.totalAvailableStorageGb).toBe(256);
+
+      const dockedIr = compileToIR(
+        parseDSL(`
+          voxel phone @ (0, 0, 0) type="vox.device.phone-core"
+          voxel nvme @ (1, 0, 0) type="vox.storage.nvme-bay"
+        `),
+        registry
+      );
+      const dockedResult = verifyAssembly(dockedIr);
+      expect(dockedResult.passed).toBe(true);
+      expect(dockedResult.errors).toHaveLength(0);
+      expect(dockedIr.metrics.dedicatedStorageGb).toBe(256);
+      expect(dockedIr.metrics.modularStorageGb).toBe(2048);
+      expect(dockedIr.metrics.totalStorageGb).toBe(2304);
+
+      const dockedInfo = dockedResult.diagnostics.find(
+        (d) => d.gate === 2 && d.severity === 'info'
+      );
+      expect(dockedInfo?.metadata?.storageScope).toBe('hybrid');
+      expect(dockedInfo?.metadata?.totalAvailableStorageGb).toBe(2304);
+    });
   });
 
   // --------------------------------------------------------------------------

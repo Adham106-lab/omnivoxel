@@ -66,3 +66,31 @@ export const AlertIcon: React.FC<IconProps> = ({ className }) => (
     <path d="M12 9v4M12 17h.01" />
   </svg>
 );
+
+export const PauseIcon: React.FC<IconProps> = ({ className }) => (
+  <svg {...base} className={className} fill="currentColor" stroke="none">
+    <rect x="6" y="4.5" width="4.2" height="15" rx="1" />
+    <rect x="13.8" y="4.5" width="4.2" height="15" rx="1" />
+  </svg>
+);
+
+export const StepForwardIcon: React.FC<IconProps> = ({ className }) => (
+  <svg {...base} className={className}>
+    <path d="M6 5v14l9-7z" fill="currentColor" stroke="none" />
+    <path d="M19 5v14" />
+  </svg>
+);
+
+export const StepBackIcon: React.FC<IconProps> = ({ className }) => (
+  <svg {...base} className={className}>
+    <path d="M18 5v14l-9-7z" fill="currentColor" stroke="none" />
+    <path d="M5 5v14" />
+  </svg>
+);
+
+export const ResetIcon: React.FC<IconProps> = ({ className }) => (
+  <svg {...base} className={className}>
+    <path d="M3 12a9 9 0 1 0 3-6.7" />
+    <path d="M3 4v5h5" />
+  </svg>
+);

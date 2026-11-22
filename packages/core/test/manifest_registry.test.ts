@@ -8,9 +8,10 @@ import {
 } from '../src/index.js';
 
 describe('Voxel Manifest & Registry', () => {
-  it('creates default registry with all 6 starter manifests', () => {
+  it('creates default registry with all 9 built-in manifests', () => {
     const registry = createDefaultRegistry();
-    expect(registry.size).toBe(6);
+    expect(registry.size).toBe(9);
+    expect(STARTER_MANIFESTS).toHaveLength(9);
 
     const expectedIds = [
       'vox.struct.alu-150',
@@ -19,6 +20,9 @@ describe('Voxel Manifest & Registry', () => {
       'vox.display.oled-6in',
       'vox.power.pd-100w',
       'vox.io.gamepad-ctrl',
+      'vox.compute.arm-soc',
+      'vox.device.phone-core',
+      'vox.storage.nvme-bay',
     ];
 
     for (const id of expectedIds) {
@@ -55,15 +59,57 @@ describe('Voxel Manifest & Registry', () => {
     expect(em.electrical.railIsolationRequired).toBe(true);
   });
 
+  it('validates unified ARM ecosystem manifests (arm-soc, phone-core, nvme-bay)', () => {
+    const registry = createDefaultRegistry();
+
+    const armSoc = registry.get('vox.compute.arm-soc')!;
+    expect(armSoc.category).toBe('compute');
+    expect(armSoc.thermal.tdpWatts).toBeLessThanOrEqual(15);
+    expect(armSoc.electrical.controlPlane.supported).toBe(true);
+    expect(armSoc.electrical.highSpeedPlane.supported).toBe(true);
+    expect(armSoc.electrical.highSpeedPlane.protocol).toBe('pcie');
+    expect(armSoc.electrical.highSpeedPlane.isSource).toBe(true);
+    expect(armSoc.capabilities).toContain('arm64-compute');
+
+    const phoneCore = registry.get('vox.device.phone-core')!;
+    expect(phoneCore.category).toBe('compute');
+    expect(phoneCore.storage?.scope).toBe('dedicated');
+    expect(phoneCore.storage?.capacityGb).toBeGreaterThanOrEqual(128);
+    expect(phoneCore.metadata?.dedicatedStorageGb).toBe(phoneCore.storage?.capacityGb);
+    expect(phoneCore.electrical.highSpeedPlane.supported).toBe(true);
+    expect(phoneCore.electrical.powerRails.computeRail?.type).toBe('provider');
+    expect(phoneCore.thermal.passiveDissipationWatts).toBeGreaterThanOrEqual(
+      phoneCore.thermal.tdpWatts
+    );
+
+    const nvmeBay = registry.get('vox.storage.nvme-bay')!;
+    expect(nvmeBay.category).toBe('storage');
+    expect(nvmeBay.storage?.scope).toBe('modular');
+    expect(nvmeBay.storage?.capacityGb).toBeGreaterThanOrEqual(1024);
+    expect(nvmeBay.storage?.requiresHostHighSpeedLink).toBe(true);
+    expect(nvmeBay.electrical.highSpeedPlane.supported).toBe(true);
+    expect(nvmeBay.electrical.highSpeedPlane.protocol).toBe('pcie');
+    expect(nvmeBay.capabilities).toContain('hot-swappable');
+  });
+
   it('filters registry entries by category', () => {
     const registry = createDefaultRegistry();
-    const computeVoxels = registry.filterByCategory('compute');
-    expect(computeVoxels).toHaveLength(1);
-    expect(computeVoxels[0].id).toBe('vox.compute.gpu-module');
+    const computeIds = registry.filterByCategory('compute').map((m) => m.id);
+    expect(computeIds).toEqual(
+      expect.arrayContaining([
+        'vox.compute.gpu-module',
+        'vox.compute.arm-soc',
+        'vox.device.phone-core',
+      ])
+    );
 
     const displayVoxels = registry.filterByCategory('display');
     expect(displayVoxels).toHaveLength(1);
     expect(displayVoxels[0].id).toBe('vox.display.oled-6in');
+
+    const storageVoxels = registry.filterByCategory('storage');
+    expect(storageVoxels).toHaveLength(1);
+    expect(storageVoxels[0].id).toBe('vox.storage.nvme-bay');
   });
 
   it('allows registering custom manifests', () => {

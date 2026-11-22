@@ -48,6 +48,9 @@ export interface AssemblyMetrics {
   computePowerProvidedWatts: number;
   actuatorPowerDemandedWatts: number;
   actuatorPowerProvidedWatts: number;
+  dedicatedStorageGb: number;
+  modularStorageGb: number;
+  totalStorageGb: number;
   boundingBox: {
     min: Coord3D;
     max: Coord3D;
@@ -239,6 +242,8 @@ function calculateMetrics(instances: VoxelInstance[]): AssemblyMetrics {
   let computePowerProvidedWatts = 0;
   let actuatorPowerDemandedWatts = 0;
   let actuatorPowerProvidedWatts = 0;
+  let dedicatedStorageGb = 0;
+  let modularStorageGb = 0;
 
   let minX = Infinity,
     minY = Infinity,
@@ -269,6 +274,18 @@ function calculateMetrics(instances: VoxelInstance[]): AssemblyMetrics {
       } else if (actuatorRail.type === 'provider') {
         actuatorPowerProvidedWatts += actuatorRail.maxPowerWatts;
       }
+    }
+
+    // Dedicated vs. modular storage capacity
+    const storageSpec = v.manifest.storage;
+    if (storageSpec && storageSpec.capacityGb > 0) {
+      if (storageSpec.scope === 'dedicated') {
+        dedicatedStorageGb += storageSpec.capacityGb;
+      } else {
+        modularStorageGb += storageSpec.capacityGb;
+      }
+    } else if (typeof v.manifest.metadata?.dedicatedStorageGb === 'number') {
+      dedicatedStorageGb += v.manifest.metadata.dedicatedStorageGb;
     }
 
     // Bounds
@@ -305,6 +322,9 @@ function calculateMetrics(instances: VoxelInstance[]): AssemblyMetrics {
     computePowerProvidedWatts,
     actuatorPowerDemandedWatts,
     actuatorPowerProvidedWatts,
+    dedicatedStorageGb,
+    modularStorageGb,
+    totalStorageGb: dedicatedStorageGb + modularStorageGb,
     boundingBox,
   };
 }
