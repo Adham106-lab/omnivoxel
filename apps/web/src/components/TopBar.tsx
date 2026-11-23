@@ -13,6 +13,7 @@ const MODE_HINT: Record<VisualMode, string> = {
   Assembly: 'Category and material look',
   Thermal: 'Heatmap: TDP vs. heatsink dissipation',
   Bus: 'Control plane vs. high-speed plane links',
+  Physics: 'Open cuboctahedron truss & static mechanical load FEA',
 };
 
 export const Brand: React.FC = () => (

@@ -6,7 +6,7 @@ import { RoomEnvironment } from './room.js';
 export interface GalleryItem {
   id: string;
   name: string;
-  category: 'device' | 'setup';
+  category: 'device' | 'setup' | 'structural';
   description: string;
   dsl: string;
   roomEnvironment: RoomEnvironment;
@@ -606,6 +606,401 @@ voxel heatsink_secondary @ (5, 4, 6) {
   },
 };
 
+export const GALLERY_VOXEL_CHAIR: GalleryItem = {
+  id: 'voxel-chair',
+  name: 'Modular Voxel Chair',
+  category: 'structural',
+  description:
+    'Reconfigurable 12-voxel cuboctahedron lattice chair with four load-bearing legs, 2×2 seat deck, and full backrest. Supports live pivoting reconfiguration into Table or Couch.',
+  tags: ['structural', 'furniture', 'chair', 'truss', 'reconfigurable'],
+  roomEnvironment: {
+    id: 'room-structural-bay',
+    name: 'Modular Furniture Test Floor',
+    dimensionsMm: { x: 2400, y: 2400, z: 2000 },
+    boundsMinMm: { x: -600, y: -600, z: 0 },
+    boundsMaxMm: { x: 1800, y: 1800, z: 2000 },
+    obstacles: [
+      {
+        id: 'test-floor-pad',
+        name: 'Load Cell Floor Pad',
+        type: 'furniture',
+        boundsMinMm: { x: -450, y: -450, z: -120 },
+        boundsMaxMm: { x: 1200, y: 1200, z: 0 },
+        isFixed: true,
+        color: '#475569',
+      },
+    ],
+  },
+  dsl: `assembly "OmniVoxel-Chair" {
+  formFactor: "Modular Voxel Chair"
+  architecture: "Open Cuboctahedron Truss Lattice"
+}
+
+// Four Grounded Load-Bearing Legs (z = 0)
+voxel v01 @ (0, 0, 0) {
+  type: "vox.struct.alu-150"
+  role: "leg-front-left"
+}
+
+voxel v02 @ (1, 0, 0) {
+  type: "vox.struct.alu-150"
+  role: "leg-front-right"
+}
+
+voxel v03 @ (0, 1, 0) {
+  type: "vox.struct.alu-150"
+  role: "leg-rear-left"
+}
+
+voxel v04 @ (1, 1, 0) {
+  type: "vox.struct.alu-150"
+  role: "leg-rear-right"
+}
+
+// 2x2 Structural Seat Deck (z = 1)
+voxel v05 @ (0, 0, 1) {
+  type: "vox.struct.alu-150"
+  role: "seat-front-left"
+}
+
+voxel v06 @ (1, 0, 1) {
+  type: "vox.struct.alu-150"
+  role: "seat-front-right"
+}
+
+voxel v07 @ (0, 1, 1) {
+  type: "vox.struct.alu-150"
+  role: "seat-rear-left"
+}
+
+voxel v08 @ (1, 1, 1) {
+  type: "vox.struct.alu-150"
+  role: "seat-rear-right"
+}
+
+// Upright Backrest Truss (y = 1, z = 2..3)
+voxel v09 @ (0, 1, 2) {
+  type: "vox.struct.alu-150"
+  role: "backrest-lower-left"
+}
+
+voxel v10 @ (1, 1, 2) {
+  type: "vox.struct.alu-150"
+  role: "backrest-lower-right"
+}
+
+voxel v11 @ (0, 1, 3) {
+  type: "vox.struct.alu-150"
+  role: "backrest-upper-left"
+}
+
+voxel v12 @ (1, 1, 3) {
+  type: "vox.struct.alu-150"
+  role: "backrest-upper-right"
+}`,
+  compile(registry = createDefaultRegistry()) {
+    const ast = parseDSL(this.dsl);
+    const ir = compileToIR(ast, registry);
+    return { ir, roomEnvironment: this.roomEnvironment };
+  },
+};
+
+export const GALLERY_VOXEL_TABLE: GalleryItem = {
+  id: 'voxel-table',
+  name: 'Modular Voxel Table',
+  category: 'structural',
+  description:
+    'Reconfigurable 12-voxel cuboctahedron lattice table featuring four corner legs supporting an elevated 4×2 spanning tabletop. Morphs directly to/from Chair and Couch.',
+  tags: ['structural', 'furniture', 'table', 'truss', 'reconfigurable'],
+  roomEnvironment: {
+    id: 'room-structural-bay',
+    name: 'Modular Furniture Test Floor',
+    dimensionsMm: { x: 2400, y: 2400, z: 2000 },
+    boundsMinMm: { x: -600, y: -600, z: 0 },
+    boundsMaxMm: { x: 1800, y: 1800, z: 2000 },
+    obstacles: [
+      {
+        id: 'test-floor-pad',
+        name: 'Load Cell Floor Pad',
+        type: 'furniture',
+        boundsMinMm: { x: -450, y: -450, z: -120 },
+        boundsMaxMm: { x: 1200, y: 1200, z: 0 },
+        isFixed: true,
+        color: '#475569',
+      },
+    ],
+  },
+  dsl: `assembly "OmniVoxel-Table" {
+  formFactor: "Modular Voxel Table"
+  architecture: "Open Cuboctahedron Truss Lattice"
+}
+
+// Four Corner Support Legs (z = 0)
+voxel v01 @ (0, 0, 0) {
+  type: "vox.struct.alu-150"
+  role: "leg-front-left"
+}
+
+voxel v02 @ (3, 0, 0) {
+  type: "vox.struct.alu-150"
+  role: "leg-front-right"
+}
+
+voxel v03 @ (0, 1, 0) {
+  type: "vox.struct.alu-150"
+  role: "leg-rear-left"
+}
+
+voxel v04 @ (3, 1, 0) {
+  type: "vox.struct.alu-150"
+  role: "leg-rear-right"
+}
+
+// 4x2 Elevated Spanning Tabletop (z = 1)
+voxel v05 @ (0, 0, 1) {
+  type: "vox.struct.alu-150"
+  role: "top-front-1"
+}
+
+voxel v06 @ (1, 0, 1) {
+  type: "vox.struct.alu-150"
+  role: "top-front-2"
+}
+
+voxel v07 @ (2, 0, 1) {
+  type: "vox.struct.alu-150"
+  role: "top-front-3"
+}
+
+voxel v08 @ (3, 0, 1) {
+  type: "vox.struct.alu-150"
+  role: "top-front-4"
+}
+
+voxel v09 @ (0, 1, 1) {
+  type: "vox.struct.alu-150"
+  role: "top-rear-1"
+}
+
+voxel v10 @ (1, 1, 1) {
+  type: "vox.struct.alu-150"
+  role: "top-rear-2"
+}
+
+voxel v11 @ (2, 1, 1) {
+  type: "vox.struct.alu-150"
+  role: "top-rear-3"
+}
+
+voxel v12 @ (3, 1, 1) {
+  type: "vox.struct.alu-150"
+  role: "top-rear-4"
+}`,
+  compile(registry = createDefaultRegistry()) {
+    const ast = parseDSL(this.dsl);
+    const ir = compileToIR(ast, registry);
+    return { ir, roomEnvironment: this.roomEnvironment };
+  },
+};
+
+export const GALLERY_VOXEL_COUCH: GalleryItem = {
+  id: 'voxel-couch',
+  name: 'Modular Voxel Couch / Sofa',
+  category: 'structural',
+  description:
+    'Reconfigurable 12-voxel modular sofa with four-wide seating base, twin raised armrests, rear support piers, and spanning lumbar backrest beam.',
+  tags: ['structural', 'furniture', 'couch', 'sofa', 'truss', 'reconfigurable'],
+  roomEnvironment: {
+    id: 'room-structural-bay',
+    name: 'Modular Furniture Test Floor',
+    dimensionsMm: { x: 2400, y: 2400, z: 2000 },
+    boundsMinMm: { x: -600, y: -600, z: 0 },
+    boundsMaxMm: { x: 1800, y: 1800, z: 2000 },
+    obstacles: [
+      {
+        id: 'test-floor-pad',
+        name: 'Load Cell Floor Pad',
+        type: 'furniture',
+        boundsMinMm: { x: -450, y: -450, z: -120 },
+        boundsMaxMm: { x: 1200, y: 1200, z: 0 },
+        isFixed: true,
+        color: '#475569',
+      },
+    ],
+  },
+  dsl: `assembly "OmniVoxel-Couch" {
+  formFactor: "Modular Voxel Couch"
+  architecture: "Open Cuboctahedron Truss Lattice"
+}
+
+// Four-Wide Grounded Seat Base (y = 0, z = 0)
+voxel v01 @ (0, 0, 0) {
+  type: "vox.struct.alu-150"
+  role: "seat-base-1"
+}
+
+voxel v02 @ (1, 0, 0) {
+  type: "vox.struct.alu-150"
+  role: "seat-base-2"
+}
+
+voxel v03 @ (2, 0, 0) {
+  type: "vox.struct.alu-150"
+  role: "seat-base-3"
+}
+
+voxel v04 @ (3, 0, 0) {
+  type: "vox.struct.alu-150"
+  role: "seat-base-4"
+}
+
+// Twin Raised Side Armrests (y = 0, z = 1)
+voxel v05 @ (0, 0, 1) {
+  type: "vox.struct.alu-150"
+  role: "armrest-left"
+}
+
+voxel v06 @ (3, 0, 1) {
+  type: "vox.struct.alu-150"
+  role: "armrest-right"
+}
+
+// Rear Support Piers (y = 1, z = 0)
+voxel v07 @ (0, 1, 0) {
+  type: "vox.struct.alu-150"
+  role: "rear-pier-left"
+}
+
+voxel v08 @ (3, 1, 0) {
+  type: "vox.struct.alu-150"
+  role: "rear-pier-right"
+}
+
+// Spanning Upper Backrest Beam (y = 1, z = 1)
+voxel v09 @ (0, 1, 1) {
+  type: "vox.struct.alu-150"
+  role: "backrest-1"
+}
+
+voxel v10 @ (1, 1, 1) {
+  type: "vox.struct.alu-150"
+  role: "backrest-2"
+}
+
+voxel v11 @ (2, 1, 1) {
+  type: "vox.struct.alu-150"
+  role: "backrest-3"
+}
+
+voxel v12 @ (3, 1, 1) {
+  type: "vox.struct.alu-150"
+  role: "backrest-4"
+}`,
+  compile(registry = createDefaultRegistry()) {
+    const ast = parseDSL(this.dsl);
+    const ir = compileToIR(ast, registry);
+    return { ir, roomEnvironment: this.roomEnvironment };
+  },
+};
+
+export const GALLERY_VOXEL_BRIDGE: GalleryItem = {
+  id: 'voxel-bridge',
+  name: 'Modular Voxel Bridge (Span / Truss)',
+  category: 'structural',
+  description:
+    'Elevated 10-voxel Pratt/arch cuboctahedron truss bridge with twin grounded abutment piers, five-voxel clear-span deck, and upper compression arch chord for static FEA load inspection.',
+  tags: ['structural', 'architecture', 'bridge', 'span', 'truss', 'physics'],
+  roomEnvironment: {
+    id: 'room-bridge-span',
+    name: 'Structural Load Test Rig',
+    dimensionsMm: { x: 2600, y: 2000, z: 2000 },
+    boundsMinMm: { x: -500, y: -600, z: 0 },
+    boundsMaxMm: { x: 2100, y: 1400, z: 2000 },
+    obstacles: [
+      {
+        id: 'west-abutment',
+        name: 'West Abutment Foundation',
+        type: 'furniture',
+        boundsMinMm: { x: -350, y: -300, z: -150 },
+        boundsMaxMm: { x: 200, y: 450, z: 0 },
+        isFixed: true,
+        color: '#475569',
+      },
+      {
+        id: 'east-abutment',
+        name: 'East Abutment Foundation',
+        type: 'furniture',
+        boundsMinMm: { x: 550, y: -300, z: -150 },
+        boundsMaxMm: { x: 1100, y: 450, z: 0 },
+        isFixed: true,
+        color: '#475569',
+      },
+    ],
+  },
+  dsl: `assembly "OmniVoxel-Bridge" {
+  formFactor: "Modular Voxel Truss Bridge"
+  architecture: "Cuboctahedron Clear-Span Arch Truss"
+}
+
+// Twin Grounded Abutment Piers (z = 0)
+voxel pier_west @ (0, 0, 0) {
+  type: "vox.struct.alu-150"
+  role: "abutment-pier-west"
+}
+
+voxel pier_east @ (4, 0, 0) {
+  type: "vox.struct.alu-150"
+  role: "abutment-pier-east"
+}
+
+// Elevated Five-Voxel Clear-Span Deck (z = 1)
+voxel deck_1 @ (0, 0, 1) {
+  type: "vox.struct.alu-150"
+  role: "deck-west-bearing"
+}
+
+voxel deck_2 @ (1, 0, 1) {
+  type: "vox.struct.alu-150"
+  role: "deck-quarter-west"
+}
+
+voxel deck_3 @ (2, 0, 1) {
+  type: "vox.struct.alu-150"
+  role: "deck-midspan"
+}
+
+voxel deck_4 @ (3, 0, 1) {
+  type: "vox.struct.alu-150"
+  role: "deck-quarter-east"
+}
+
+voxel deck_5 @ (4, 0, 1) {
+  type: "vox.struct.alu-150"
+  role: "deck-east-bearing"
+}
+
+// Upper Compression Truss Arch Chord (z = 2)
+voxel arch_west @ (1, 0, 2) {
+  type: "vox.struct.alu-150"
+  role: "upper-chord-west"
+}
+
+voxel arch_crown @ (2, 0, 2) {
+  type: "vox.struct.alu-150"
+  role: "upper-chord-crown"
+}
+
+voxel arch_east @ (3, 0, 2) {
+  type: "vox.struct.alu-150"
+  role: "upper-chord-east"
+}`,
+  compile(registry = createDefaultRegistry()) {
+    const ast = parseDSL(this.dsl);
+    const ir = compileToIR(ast, registry);
+    return { ir, roomEnvironment: this.roomEnvironment };
+  },
+};
+
 export const GALLERY_ITEMS: readonly GalleryItem[] = [
   GALLERY_HANDHELD_CONSOLE,
   GALLERY_MODULAR_LAPTOP,
@@ -614,6 +1009,10 @@ export const GALLERY_ITEMS: readonly GalleryItem[] = [
   GALLERY_ARM_PHONE,
   GALLERY_ARM_LAPTOP,
   GALLERY_ARM_WORKSTATION,
+  GALLERY_VOXEL_CHAIR,
+  GALLERY_VOXEL_TABLE,
+  GALLERY_VOXEL_COUCH,
+  GALLERY_VOXEL_BRIDGE,
 ] as const;
 
 export function getGalleryItem(id: string): GalleryItem | undefined {

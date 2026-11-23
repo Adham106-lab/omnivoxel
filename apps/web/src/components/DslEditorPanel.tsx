@@ -92,7 +92,7 @@ export const DslEditorPanel: React.FC<DslEditorPanelProps> = ({
       </div>
 
       {/* Quick insert chips */}
-      <div className="flex h-9 shrink-0 items-center gap-1.5 overflow-x-auto border-b border-slate-800/80 px-3">
+      <div className="flex h-9 shrink-0 items-center gap-1 overflow-x-auto border-b border-slate-800/80 px-2.5">
         <span className="mr-0.5 shrink-0 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
           Insert
         </span>
@@ -102,7 +102,7 @@ export const DslEditorPanel: React.FC<DslEditorPanelProps> = ({
             type="button"
             title={q.title}
             onClick={() => handleInsert(q.key)}
-            className="h-6 shrink-0 rounded-full border border-slate-700 bg-slate-800/60 px-2.5 font-mono text-[11px] text-slate-200 hover:border-sky-500/60 hover:text-sky-200"
+            className="h-6 shrink-0 rounded-full border border-slate-700 bg-slate-800/60 px-2 font-mono text-[10.5px] text-slate-200 hover:border-sky-500/60 hover:text-sky-200"
           >
             {q.label}
           </button>

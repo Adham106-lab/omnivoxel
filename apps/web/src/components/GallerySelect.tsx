@@ -11,6 +11,7 @@ interface GallerySelectProps {
 const GROUPS: ReadonlyArray<{ category: GalleryItem['category']; label: string }> = [
   { category: 'device', label: 'Device assemblies' },
   { category: 'setup', label: 'Room & furniture setups' },
+  { category: 'structural', label: 'Structural & furniture lattices' },
 ];
 
 export const GallerySelect: React.FC<GallerySelectProps> = ({ currentId, onSelect }) => {

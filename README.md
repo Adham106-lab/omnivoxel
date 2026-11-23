@@ -91,13 +91,20 @@ The parser constructs an AST and compiles it to `VoxelIR`, automatically detecti
 - **Gate 5 (Static Mechanical Load):** Verifies vertical column compressive forces do not exceed base voxel compression limits ($F_{\text{comp}} \le F_{\text{max}}$).
 
 ### 4. Built-in Gallery Presets (`GALLERY_ITEMS`)
-- `handheld-gaming-console`: Handheld Gaming Console (OmniVoxel Deck)
-- `modular-laptop`: Modular Laptop Workstation
-- `desk-workstation`: Desk Workstation Setup
-- `living-room-unit`: Living Room Entertainment Unit
-- `arm-modular-phone`: Modular ARM Phone (Standalone + Docked Storage)
-- `arm-modular-laptop`: ARM Modular Laptop (Phone Core + ARM SoC + Display + Battery + IO + 2 TB NVMe Bay)
-- `arm-pc-workstation`: ARM Desktop / PC Workstation (Dual ARM SoC Cluster + Dual 2 TB NVMe Array + Dual Displays + Heatsink Towers)
+- **Device Assemblies:**
+  - `handheld-gaming-console`: Handheld Gaming Console (OmniVoxel Deck)
+  - `modular-laptop`: Modular Laptop Workstation
+  - `arm-modular-phone`: Modular ARM Phone (Standalone + Docked Storage)
+  - `arm-modular-laptop`: ARM Modular Laptop (Phone Core + ARM SoC + Display + Battery + IO + 2 TB NVMe Bay)
+- **Room & Furniture Setups:**
+  - `desk-workstation`: Desk Workstation Setup
+  - `living-room-unit`: Living Room Entertainment Unit
+  - `arm-pc-workstation`: ARM Desktop / PC Workstation (Dual ARM SoC Cluster + Dual 2 TB NVMe Array + Dual Displays + Heatsink Towers)
+- **Structural & Architectural Lattices (`category: 'structural'`):**
+  - `voxel-chair`: Modular Voxel Chair (12-voxel reconfigurable cuboctahedron lattice)
+  - `voxel-table`: Modular Voxel Table (12-voxel clear-span tabletop & corner legs)
+  - `voxel-couch`: Modular Voxel Couch / Sofa (12-voxel sofa with armrests & backrest)
+  - `voxel-bridge`: Modular Voxel Bridge (10-voxel twin-pier Pratt/arch truss span)
 
 ## Running Tests
 
@@ -108,7 +115,18 @@ pnpm --filter @omnivoxel/web build
 
 ## Workbench interactions (apps/web)
 
-- **Per-category geometry** – each voxel category (`structural`, `actuated`, `compute`, `display`, `power`, `io`, `storage`) has its own machined sub-meshes (fin/rail frame, pivot collar + edge coils, heatsink + chip package, recessed bezel screen, cell-pack tray, controls/ports, finned NVMe caddy sled). Details protrude at most 1.2 % of the voxel edge, so lattice alignment stays crisp.
-- **Move voxels** – select a voxel, then drag an axis arrow, use the *Move* pad, or press ←/→ (X), ↓/↑ (Y), PgDn/PgUp (Z). Every cell step rewrites the voxel's DSL header, recompiles and re-runs all five gates. Occupied cells are refused.
-- **Link connectors** – each `VoxelLink` is drawn with outer-seam corner clamps, copper edge coils, telescoping steel pins, rotating bayonet jaws, and cyan/magenta bus pins that engage on docking and release on `Step Back` or moving away.
-- **Assembly playback** – voxels leave the *Assembly Container* one by one and execute point-to-point Launch → Travel / Pivot → Catch transitions into their lattice cells (reset, step back, play/pause, step forward, scrub bar, 0.5×–4× speed).
+- **Open Cuboctahedron Truss Geometry & `Physics` FEA View Mode** – switch to the **Physics** tab alongside `Assembly`, `Thermal`, and `Bus` to render every voxel as an open cellular metamaterial **cuboctahedron / octahedral truss lattice** colored by deterministic von Mises mechanical load distribution (cool blue → cyan → green → amber → red). A live **Simulation Results Summary** overlay displays **Max Displacement (mm)**, **Max Stress (MPa)**, and **Safety Factor (×)** derived from Gate 5 and static truss load routing.
+- **Realistic per-module 3D silhouettes** – in `Assembly` mode every module renders a distinct engineering form factor strictly inside its lattice cell bounds (zero clipping, crisp grid alignment):
+  - *Structural Lattice (`structural` / `vox.struct.alu-150`)*: open machined-aluminum cuboctahedron space-frame truss with anodized face-center mating rings.
+  - *ARM Phone Core (`vox.device.phone-core`)*: slim chamfered titanium smartphone slab with recessed OLED UI glass, camera/sensor notch, side buttons, and a rear magnetic docking plate bridging cleanly to lattice connectors.
+  - *OLED Display (`display`)*: thin frameless upright OLED monitor panel with recessed glass screen and rear magnetic docking hub.
+  - *Modular NVMe Storage (`storage` / `vox.storage.nvme-bay`)*: hot-swappable NVMe drive-bay cartridge with recessed side guide rails, sculpted aluminum heat-spreader fins, cyan pull-tab latch, rear PCIe/USB4 gold connector, and an emissive mounted High-Speed Bus LED.
+  - *ARM & GPU Compute (`compute`)*: open-sided machined aluminum exoskeleton exposing the internal PCB, brushed-nickel ARM SoC / GPU IHS die block, copper heatpipes, and recessed aluminum heatsink fin stacks.
+  - *Actuated Pivot (`actuated`)*: open-frame ElectroVoxel skeletal cube with 8 corner connector blocks, 12 copper edge electromagnets, internal electronics deck, and a visible amber pivot collar.
+  - *Power (`power`)* & *IO (`io`)*: chamfered LiFePO4 battery pack with 4-segment charge bar and heavy terminals, and slim ergonomic control/port deck with 3D thumbsticks, D-pad, and USB-C ports.
+- **Interactive Radial Menu** – right-click any voxel in the 3D viewport (or click **Radial** on the selection chip) to open a viewport-clamped circular radial menu with **+ Neighbor** (attach a connected voxel on an open face), **Swap Type** (6-module outer arc: Truss, Pivot, ARM SoC, OLED, NVMe, Power), and **Delete** (detaches the voxel with visible joint unlatch animation). Every action updates the DSL, recompiles, and re-runs all 5 verification gates immediately.
+- **Live Furniture Morph Reconfiguration (`Chair ↔ Table ↔ Couch`)** – when viewing any of the 12-voxel modular furniture presets, use the **Morph** control strip in the viewport overlay to animate voxels detaching, traversing across the lattice surface, and executing 90° corner-edge **Pivoting** moves directly into the target furniture shape.
+- **DSL quick-insert chips & interactive moves** – insert `+ ARM SoC`, `+ Phone`, `+ NVMe`, `+ GPU`, `+ OLED`, `+ Battery`, or `+ Heatsink` directly adjacent to the active assembly, or select any voxel and drag an axis arrow / press ←→↑↓ PgUp/PgDn to move cell-by-cell with live joint latch/unlatch animations.
+- **Connected Launch Rail & continuous assembly playback** – the *Assembly Container* opens through a machined `+X` portal onto a physical **Launch Rail / Docking Bridge** aligned directly with the lattice entry point. Modules glide out along the rail at floor height, traverse step-by-step across the placed lattice surface (`Launch → Travel / Pivot → Catch`) with dual-polarity hinge fulcrum indicators, and seat via 90° corner-edge pivoting or coaxial guided docking.
+
+

@@ -13,7 +13,7 @@ export interface CategoryStyle {
 export const CATEGORY_STYLE: Record<VoxelCategory, CategoryStyle> = {
   structural: { label: 'Aluminum frame', hex: 0x94a3b8, css: '#94a3b8', metalness: 0.85, roughness: 0.32 },
   actuated: { label: 'Actuator pivot', hex: 0xf59e0b, css: '#f59e0b', metalness: 0.35, roughness: 0.45 },
-  compute: { label: 'CPU / GPU', hex: 0x8b5cf6, css: '#8b5cf6', metalness: 0.3, roughness: 0.4 },
+  compute: { label: 'ARM / GPU', hex: 0x8b5cf6, css: '#8b5cf6', metalness: 0.3, roughness: 0.4 },
   display: { label: 'Display', hex: 0x1e293b, css: '#38bdf8', metalness: 0.2, roughness: 0.5 },
   power: { label: 'Battery', hex: 0x10b981, css: '#10b981', metalness: 0.25, roughness: 0.5 },
   io: { label: 'Controller', hex: 0xfb7185, css: '#fb7185', metalness: 0.2, roughness: 0.55 },

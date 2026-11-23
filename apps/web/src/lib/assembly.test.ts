@@ -17,7 +17,15 @@ import {
   sampleStepPose,
   segmentHitsBox,
 } from './assembly';
-import { isCellFree, moveVoxelInDsl } from './layout';
+import {
+  addNeighborInDsl,
+  deleteVoxelInDsl,
+  isCellFree,
+  moveVoxelInDsl,
+  swapVoxelTypeInDsl,
+} from './layout';
+import { analyzePhysics, stressHex } from './physics';
+import { planMorph, sampleMorphPose } from './morph';
 
 const registry = createDefaultRegistry();
 const compile = (dsl: string): VoxelIR => compileToIR(parseDSL(dsl), registry);
@@ -63,15 +71,35 @@ describe('planAssembly', () => {
         expect(plan.steps.filter((s) => !s.collisionFree)).toEqual([]);
       });
 
-      it('keeps the container clear of the finished assembly', () => {
+      it('keeps the container clear of the finished assembly and connects it via a Launch Rail', () => {
         const asmMinX = Math.min(...plan.steps.map((s) => s.target.x - s.size.x / 2));
         expect(plan.dock.maxMm.x).toBeLessThan(asmMinX);
+        expect(plan.dock.rail.dockExitMm.x).toBeCloseTo(plan.dock.maxMm.x, 4);
+        expect(plan.dock.rail.latticeEntryMm.x).toBeCloseTo(asmMinX, 4);
+        expect(plan.dock.rail.gateYMaxMm).toBeGreaterThan(plan.dock.rail.gateYMinMm);
         expect(plan.dock.slots).toHaveLength(Math.max(1, ir.voxels.length));
         for (const slot of plan.dock.slots) {
           expect(slot.x).toBeGreaterThan(plan.dock.innerMinMm.x);
           expect(slot.x).toBeLessThan(plan.dock.innerMaxMm.x);
           expect(slot.y).toBeGreaterThan(plan.dock.innerMinMm.y);
           expect(slot.y).toBeLessThan(plan.dock.innerMaxMm.y);
+        }
+      });
+
+      it('launches modules through the +X exit gate onto the Launch Rail at floor height', () => {
+        const rail = plan.dock.rail;
+        for (const s of plan.steps) {
+          const launchEnd = s.launchPath[s.launchPath.length - 1];
+          // Launch ends right on the Launch Rail entry cell (never flying over the container walls)
+          expect(launchEnd.x).toBeCloseTo(rail.entryCellCenterMm.x, 4);
+          expect(launchEnd.y).toBeCloseTo(rail.dockExitMm.y, 4);
+          expect(launchEnd.z).toBeCloseTo(plan.dock.floorZMm + s.size.z / 2, 4);
+          // Every waypoint in launchPath stays at rail floor height
+          for (const pt of s.launchPath) {
+            expect(pt.z).toBeCloseTo(plan.dock.floorZMm + s.size.z / 2, 4);
+          }
+          // Travel begins continuously from where launch ended
+          expect(s.travelPath[0]).toEqual(launchEnd);
         }
       });
     });
@@ -309,4 +337,83 @@ voxel corner @ (1, 1, 0) {
     expect(midCatch.latchProgress).toBeLessThan(0.95);
   });
 });
+
+describe('Physics cuboctahedron truss FEA analyzer', () => {
+  const BRIDGE = GALLERY_ITEMS.find((g) => g.id === 'voxel-bridge')!;
+
+  it('computes finite displacement, stress, and safety factor on the Modular Voxel Bridge', () => {
+    const ir = compile(BRIDGE.dsl);
+    const analysis = analyzePhysics(ir);
+
+    expect(analysis.byVoxel.size).toBe(ir.voxels.length);
+    expect(analysis.summary.supportCount).toBe(2);
+    expect(analysis.summary.maxStressMpa).toBeGreaterThan(0);
+    expect(analysis.summary.maxDisplacementMm).toBeGreaterThan(0);
+    expect(analysis.summary.safetyFactor).toBeGreaterThan(1.5);
+
+    // Load-bearing abutment piers carry higher force than unloaded upper-arch ends
+    const pierWest = analysis.byVoxel.get('pier_west')!;
+    const archWest = analysis.byVoxel.get('arch_west')!;
+    expect(pierWest.isSupport).toBe(true);
+    expect(archWest.isSupport).toBe(false);
+    expect(pierWest.stressMpa).toBeGreaterThan(archWest.stressMpa);
+
+    // Stress ramp returns valid 24-bit colors across [0, 1]
+    expect(stressHex(0)).toBe(0x2563eb);
+    expect(stressHex(1)).toBe(0xef4444);
+  });
+});
+
+describe('Chair -> Table -> Couch pivoting & traversal morph planner', () => {
+  const CHAIR = GALLERY_ITEMS.find((g) => g.id === 'voxel-chair')!;
+  const TABLE = GALLERY_ITEMS.find((g) => g.id === 'voxel-table')!;
+  const COUCH = GALLERY_ITEMS.find((g) => g.id === 'voxel-couch')!;
+
+  it('plans surface-connected pivoting morphs with exact voxel conservation', () => {
+    const chairIr = compile(CHAIR.dsl);
+    const tableIr = compile(TABLE.dsl);
+    const couchIr = compile(COUCH.dsl);
+
+    const chairToTable = planMorph(chairIr, tableIr, CHAIR.id, TABLE.id);
+    expect(chairToTable.stationaryCoords.size + chairToTable.steps.length).toBe(12);
+    expect(chairToTable.steps.length).toBeGreaterThan(0);
+    expect(chairToTable.steps.some((s) => s.pivot !== null)).toBe(true);
+
+    // Start pose matches Chair; final pose lands exactly on Table cells
+    const startSample = sampleMorphPose(chairToTable, 0);
+    const endSample = sampleMorphPose(chairToTable, chairToTable.steps.length);
+    expect(startSample.poses.size).toBe(12);
+    expect(endSample.poses.size).toBe(12);
+    for (const step of chairToTable.steps) {
+      expect(startSample.poses.get(step.voxelId)!.position).toEqual(step.fromMm);
+      expect(endSample.poses.get(step.voxelId)!.position).toEqual(step.toMm);
+    }
+
+    const tableToCouch = planMorph(tableIr, couchIr, TABLE.id, COUCH.id);
+    expect(tableToCouch.stationaryCoords.size + tableToCouch.steps.length).toBe(12);
+    expect(tableToCouch.steps.length).toBeGreaterThan(0);
+  });
+});
+
+describe('Radial Menu DSL helpers', () => {
+  const CHAIR = GALLERY_ITEMS.find((g) => g.id === 'voxel-chair')!;
+
+  it('swaps a voxel type, attaches a neighbor on an open face, and deletes cleanly', () => {
+    const swappedDsl = swapVoxelTypeInDsl(CHAIR.dsl, 'v12', 'vox.actuated.em-60');
+    const swappedIr = compile(swappedDsl);
+    expect(swappedIr.getVoxel('v12')!.manifest.id).toBe('vox.actuated.em-60');
+
+    const added = addNeighborInDsl(CHAIR.dsl, 'v12', 'vox.struct.alu-150', registry);
+    expect(added).not.toBeNull();
+    const addedIr = compile(added!.dsl);
+    expect(addedIr.voxels).toHaveLength(13);
+    expect(addedIr.getLinks(added!.addedId).length).toBeGreaterThanOrEqual(1);
+
+    const deletedDsl = deleteVoxelInDsl(added!.dsl, added!.addedId);
+    const deletedIr = compile(deletedDsl);
+    expect(deletedIr.voxels).toHaveLength(12);
+    expect(deletedIr.getVoxel(added!.addedId)).toBeUndefined();
+  });
+});
+
 

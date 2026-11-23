@@ -118,4 +118,29 @@ describe('Gallery Items Catalog', () => {
     expect(result.warnings).toEqual([]);
     expect(result.passed).toBe(true);
   });
+
+  it('includes and verifies Modular Voxel Chair, Table, Couch, and Bridge structural presets across all 5 gates', () => {
+    const structuralIds = [
+      { id: 'voxel-chair', expectedCount: 12 },
+      { id: 'voxel-table', expectedCount: 12 },
+      { id: 'voxel-couch', expectedCount: 12 },
+      { id: 'voxel-bridge', expectedCount: 10 },
+    ] as const;
+
+    for (const { id, expectedCount } of structuralIds) {
+      const item = getGalleryItem(id);
+      expect(item).toBeDefined();
+      expect(item!.category).toBe('structural');
+
+      const { ir, roomEnvironment } = item!.compile(registry);
+      expect(ir.voxels).toHaveLength(expectedCount);
+      expect(ir.links.length).toBeGreaterThanOrEqual(expectedCount - 1);
+
+      const result = verifyAssembly(ir, roomEnvironment);
+      expect(result.errors).toEqual([]);
+      expect(result.warnings).toEqual([]);
+      expect(result.passed).toBe(true);
+    }
+  });
 });
+

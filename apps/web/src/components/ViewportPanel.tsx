@@ -1,22 +1,43 @@
-import React, { useEffect, useMemo } from 'react';
-import type { Coord3D, RoomEnvironment, VoxelIR } from '@omnivoxel/core';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  getGalleryItem,
+  type Coord3D,
+  type GalleryItem,
+  type RoomEnvironment,
+  type VoxelIR,
+} from '@omnivoxel/core';
 import type { Guides, IssueSeverity, Selection, VisualMode } from '../types';
 import type { VoxelThermal } from '../lib/thermal';
 import { THERMAL_GRADIENT_CSS } from '../lib/thermal';
+import {
+  STRESS_GRADIENT_CSS,
+  type PhysicsAnalysis,
+  type PhysicsSummary,
+  type VoxelPhysics,
+} from '../lib/physics';
 import { BUS_COLORS, CATEGORY_ORDER, CATEGORY_STYLE } from '../lib/theme';
 import { planAssembly } from '../lib/assembly';
+import {
+  MORPH_CYCLE_IDS,
+  planMorph,
+  type MorphPlan,
+  type MorphPresetId,
+} from '../lib/morph';
 import { useAssemblyPlayback } from '../lib/useAssemblyPlayback';
 import { AssemblyPlaybar } from './AssemblyPlaybar';
-import { SceneCanvas } from './SceneCanvas';
+import { RadialMenu, type RadialMenuAnchor } from './RadialMenu';
+import { SceneCanvas, type MorphPlayback } from './SceneCanvas';
 import { CloseIcon, FitIcon } from './icons';
 
 interface ViewportPanelProps {
+  galleryId: string;
   ir: VoxelIR | null;
   room: RoomEnvironment;
   mode: VisualMode;
   selection: Selection;
   issues: Map<string, IssueSeverity>;
   thermal: Map<string, VoxelThermal>;
+  physics: PhysicsAnalysis;
   guides: Guides;
   cameraTrigger: number;
   notice: string | null;
@@ -24,6 +45,12 @@ interface ViewportPanelProps {
   onFit: () => void;
   /** Applies a lattice move (DSL rewrite → recompile → 5-gate verify). Returns true if applied. */
   onMoveVoxel: (id: string, coord: Coord3D) => boolean;
+  /** Radial Menu actions (immediate DSL rewrite → recompile → 5-gate verify). */
+  onSwapVoxelType: (id: string, manifestId: string) => void;
+  onAddNeighbor: (anchorId: string, manifestId: string) => void;
+  onDeleteVoxel: (id: string) => void;
+  /** Commits target furniture preset once a live Morph reconfiguration completes. */
+  onCommitMorphPreset: (item: GalleryItem) => void;
 }
 
 const Dot: React.FC<{ color: string }> = ({ color }) => (
@@ -35,10 +62,14 @@ const Dot: React.FC<{ color: string }> = ({ color }) => (
 const SelectionChip: React.FC<{
   ir: VoxelIR | null;
   room: RoomEnvironment;
+  mode: VisualMode;
   selection: NonNullable<Selection>;
   thermal: Map<string, VoxelThermal>;
+  physics: Map<string, VoxelPhysics>;
+  canOpenRadial: boolean;
+  onOpenRadial: () => void;
   onClear: () => void;
-}> = ({ ir, room, selection, thermal, onClear }) => {
+}> = ({ ir, room, mode, selection, thermal, physics, canOpenRadial, onOpenRadial, onClear }) => {
   let title = selection.id;
   let name = '';
   let detail = '';
@@ -53,17 +84,27 @@ const SelectionChip: React.FC<{
     const cp = links.filter((l) => l.controlPlane.connected).length;
     const hs = links.filter((l) => l.highSpeedPlane.connected).length;
     const load = thermal.get(voxel.id);
+    const phys = physics.get(voxel.id);
     title = voxel.id;
     name = CATEGORY_STYLE[m.category].label;
-    detail = [
-      `(${voxel.coord.x}, ${voxel.coord.y}, ${voxel.coord.z})`,
-      `${(m.mechanical.massKg * 1000).toFixed(0)} g`,
-      `${m.thermal.tdpWatts.toFixed(1)} W TDP`,
-      `${cp} CP · ${hs} HS`,
-      load ? `heat load ${Math.round(load.loadRatio * 100)}%` : '',
-    ]
-      .filter(Boolean)
-      .join('  ·  ');
+    detail =
+      mode === 'Physics' && phys
+        ? [
+            `(${voxel.coord.x}, ${voxel.coord.y}, ${voxel.coord.z})`,
+            `${phys.stressMpa.toFixed(1)} MPa`,
+            `${phys.displacementMm.toFixed(2)} mm disp`,
+            `${phys.forceN.toFixed(0)} N`,
+            phys.isSupport ? 'grounded support' : `${phys.supportHops} hops to support`,
+          ].join('  ·  ')
+        : [
+            `(${voxel.coord.x}, ${voxel.coord.y}, ${voxel.coord.z})`,
+            `${(m.mechanical.massKg * 1000).toFixed(0)} g`,
+            `${m.thermal.tdpWatts.toFixed(1)} W TDP`,
+            `${cp} CP · ${hs} HS`,
+            load ? `heat load ${Math.round(load.loadRatio * 100)}%` : '',
+          ]
+            .filter(Boolean)
+            .join('  ·  ');
   } else {
     const o = room.obstacles.find((x) => x.id === selection.id);
     if (!o) return null;
@@ -86,6 +127,16 @@ const SelectionChip: React.FC<{
         </div>
         <div className="truncate font-mono text-[10px] leading-tight text-slate-400">{detail}</div>
       </div>
+      {canOpenRadial && (
+        <button
+          type="button"
+          onClick={onOpenRadial}
+          title="Open voxel radial actions (or right-click any voxel)"
+          className="h-6 shrink-0 rounded border border-sky-500/40 bg-sky-500/15 px-2 text-[10.5px] font-medium text-sky-200 hover:border-sky-400 hover:bg-sky-500/25 hover:text-white"
+        >
+          Radial
+        </button>
+      )}
       <button
         type="button"
         onClick={onClear}
@@ -132,9 +183,57 @@ const NudgePad: React.FC<{ onNudge: (axis: 'x' | 'y' | 'z', delta: 1 | -1) => vo
   </div>
 );
 
+// ------------------------------------------------------------------ physics summary
+
+const PhysicsSummaryBar: React.FC<{ summary: PhysicsSummary }> = ({ summary }) => {
+  const sfTone =
+    summary.safetyFactor >= 2.0
+      ? 'text-emerald-300'
+      : summary.safetyFactor >= 1.2
+        ? 'text-amber-300'
+        : 'text-rose-400';
+
+  return (
+    <div
+      className="pointer-events-none flex items-center gap-4 rounded-md border border-slate-700/80 bg-[#0b1020]/90 px-3 py-1.5 shadow-lg backdrop-blur"
+      aria-label="Physics simulation results summary"
+    >
+      <div>
+        <div className="text-[9px] font-semibold uppercase tracking-wider text-slate-500">
+          Max Displacement
+        </div>
+        <div className="font-mono text-[12px] font-semibold tabular-nums text-sky-200">
+          {summary.maxDisplacementMm.toFixed(2)} mm
+        </div>
+      </div>
+      <div className="h-6 w-px bg-slate-800" />
+      <div>
+        <div className="text-[9px] font-semibold uppercase tracking-wider text-slate-500">
+          Max Stress
+        </div>
+        <div className="font-mono text-[12px] font-semibold tabular-nums text-amber-300">
+          {summary.maxStressMpa.toFixed(1)} MPa
+        </div>
+      </div>
+      <div className="h-6 w-px bg-slate-800" />
+      <div>
+        <div className="text-[9px] font-semibold uppercase tracking-wider text-slate-500">
+          Safety Factor
+        </div>
+        <div className={`font-mono text-[12px] font-semibold tabular-nums ${sfTone}`}>
+          {summary.safetyFactor.toFixed(1)}×
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ------------------------------------------------------------------------ legend
 
-const Legend: React.FC<{ mode: VisualMode }> = ({ mode }) => {
+const Legend: React.FC<{ mode: VisualMode; physicsSummary: PhysicsSummary }> = ({
+  mode,
+  physicsSummary,
+}) => {
   return (
     <div className="pointer-events-none rounded-md border border-slate-800/90 bg-[#0b1020]/85 px-2.5 py-1.5 text-[10px] text-slate-300 shadow-lg backdrop-blur">
       {mode === 'Assembly' && (
@@ -184,38 +283,198 @@ const Legend: React.FC<{ mode: VisualMode }> = ({ mode }) => {
           </li>
         </ul>
       )}
+
+      {mode === 'Physics' && (
+        <div className="w-48">
+          <div className="mb-1 text-slate-400">Cuboctahedron Truss Stress (von Mises)</div>
+          <div className="h-2 rounded-full" style={{ background: STRESS_GRADIENT_CSS }} />
+          <div className="mt-0.5 flex justify-between font-mono text-[9px] text-slate-500">
+            <span>0 MPa</span>
+            <span>{(physicsSummary.maxStressMpa * 0.5).toFixed(1)}</span>
+            <span>{physicsSummary.maxStressMpa.toFixed(1)} MPa</span>
+          </div>
+        </div>
+      )}
     </div>
   );
+};
+
+const MORPH_LABELS: Record<MorphPresetId, string> = {
+  'voxel-chair': 'Chair',
+  'voxel-table': 'Table',
+  'voxel-couch': 'Couch',
 };
 
 // ------------------------------------------------------------------------ panel
 
 export const ViewportPanel: React.FC<ViewportPanelProps> = ({
+  galleryId,
   ir,
   room,
   mode,
   selection,
   issues,
   thermal,
+  physics,
   guides,
   cameraTrigger,
   notice,
   onSelect,
   onFit,
   onMoveVoxel,
+  onSwapVoxelType,
+  onAddNeighbor,
+  onDeleteVoxel,
+  onCommitMorphPreset,
 }) => {
+  const stageRef = useRef<HTMLDivElement>(null);
+  const projectVoxelRef = useRef<((id: string) => { x: number; y: number } | null) | null>(null);
+  const [stageBounds, setStageBounds] = useState({ width: 800, height: 600 });
+  const [radialAnchor, setRadialAnchor] = useState<RadialMenuAnchor | null>(null);
+
+  // Live Chair ↔ Table ↔ Couch morph state
+  const [activeMorph, setActiveMorph] = useState<{
+    plan: MorphPlan;
+    targetItem: GalleryItem;
+    progress: number;
+  } | null>(null);
+
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const update = () => setStageBounds({ width: el.clientWidth, height: el.clientHeight });
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Dismiss radial menu & cancel active morph if the preset or voxel set changes externally
+  useEffect(() => {
+    setRadialAnchor(null);
+  }, [galleryId]);
+
+  useEffect(() => {
+    if (radialAnchor && (!ir || !ir.voxelMap.has(radialAnchor.voxelId))) {
+      setRadialAnchor(null);
+    }
+  }, [ir, radialAnchor]);
+
   const plan = useMemo(() => (ir && ir.voxels.length > 0 ? planAssembly(ir) : null), [ir]);
   const playback = useAssemblyPlayback(plan?.steps.length ?? 0);
   const assembly = useMemo(() => ({ plan, progress: playback.progress }), [plan, playback.progress]);
 
-  // Editing is only offered on the finished lattice
+  // Animate active morph smoothly (Launch → Surface Traversal → 90° Pivot → Catch)
+  const activeMorphTarget = activeMorph?.targetItem ?? null;
+  const activeMorphSteps = activeMorph?.plan.steps.length ?? 0;
+
+  useEffect(() => {
+    if (!activeMorphTarget) return;
+    if (activeMorphSteps === 0) {
+      setActiveMorph(null);
+      onCommitMorphPreset(activeMorphTarget);
+      onFit();
+      return;
+    }
+
+    let raf = 0;
+    let last = performance.now();
+    let progress = 0;
+    let cancelled = false;
+
+    const tick = (now: number) => {
+      if (cancelled) return;
+      const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
+      last = now;
+      progress += dt * 1.9;
+      if (progress >= activeMorphSteps) {
+        setActiveMorph(null);
+        onCommitMorphPreset(activeMorphTarget);
+        onFit();
+        return;
+      }
+      setActiveMorph((prev) => (prev ? { ...prev, progress } : null));
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+    };
+  }, [activeMorphTarget, activeMorphSteps, onCommitMorphPreset, onFit]);
+
+  const morphPlayback: MorphPlayback | null = useMemo(
+    () => (activeMorph ? { plan: activeMorph.plan, progress: activeMorph.progress } : null),
+    [activeMorph]
+  );
+
+  // Editing is only offered on the finished lattice (not mid-assembly or mid-morph)
   const selectedVoxel = selection?.kind === 'voxel' ? ir?.getVoxel(selection.id) ?? null : null;
-  const editable = playback.complete && selectedVoxel !== null;
+  const editable = playback.complete && !activeMorph && selectedVoxel !== null;
+
+  const canMorphFurniture =
+    playback.complete &&
+    ir !== null &&
+    ir.voxels.length === 12 &&
+    (MORPH_CYCLE_IDS as readonly string[]).includes(galleryId);
+
+  const startMorphTo = useCallback(
+    (targetId: MorphPresetId) => {
+      if (!ir || targetId === galleryId || activeMorph) return;
+      const targetItem = getGalleryItem(targetId);
+      if (!targetItem) return;
+      const { ir: targetIr } = targetItem.compile();
+      if (targetIr.voxels.length !== ir.voxels.length) {
+        onCommitMorphPreset(targetItem);
+        return;
+      }
+      setRadialAnchor(null);
+      onSelect(null);
+      const morphPlan = planMorph(ir, targetIr, galleryId, targetId);
+      setActiveMorph({ plan: morphPlan, targetItem, progress: 0 });
+    },
+    [ir, galleryId, activeMorph, onCommitMorphPreset, onSelect]
+  );
 
   const nudge = (axis: 'x' | 'y' | 'z', delta: 1 | -1) => {
     if (!selectedVoxel) return;
     onMoveVoxel(selectedVoxel.id, { ...selectedVoxel.coord, [axis]: selectedVoxel.coord[axis] + delta });
   };
+
+  const handleOpenRadialForVoxel = useCallback(
+    (voxelId: string, x: number, y: number) => {
+      if (!playback.complete || activeMorph) return;
+      const voxel = ir?.getVoxel(voxelId);
+      if (!voxel) return;
+      setRadialAnchor({ voxelId, currentManifestId: voxel.manifest.id, x, y });
+    },
+    [ir, playback.complete, activeMorph]
+  );
+
+  const handleOpenRadialFromChip = useCallback(() => {
+    if (!selectedVoxel) return;
+    const projected = projectVoxelRef.current?.(selectedVoxel.id);
+    const x = projected ? projected.x : stageBounds.width * 0.5;
+    const y = projected ? projected.y : stageBounds.height * 0.45;
+    setRadialAnchor({
+      voxelId: selectedVoxel.id,
+      currentManifestId: selectedVoxel.manifest.id,
+      x,
+      y,
+    });
+  }, [selectedVoxel, stageBounds.width, stageBounds.height]);
+
+  const handleCanvasSelect = useCallback(
+    (next: Selection) => {
+      setRadialAnchor(null);
+      onSelect(next);
+    },
+    [onSelect]
+  );
+
+  const handleOrbitStart = useCallback(() => {
+    setRadialAnchor(null);
+  }, []);
 
   // Keyboard nudging: ←/→ = X, ↓/↑ = Y, PgDn/PgUp = Z
   useEffect(() => {
@@ -239,12 +498,11 @@ export const ViewportPanel: React.FC<ViewportPanelProps> = ({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-    // nudge closes over the selected voxel; re-bind whenever it changes
   }, [editable, selectedVoxel]);
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col bg-[#090d16]">
-      <div className="relative min-h-0 flex-1 overflow-hidden">
+      <div ref={stageRef} className="relative min-h-0 flex-1 overflow-hidden">
         <SceneCanvas
           ir={ir}
           room={room}
@@ -252,42 +510,111 @@ export const ViewportPanel: React.FC<ViewportPanelProps> = ({
           selection={selection}
           issues={issues}
           thermal={thermal}
+          physics={physics.byVoxel}
           guides={guides}
           cameraTrigger={cameraTrigger}
           assembly={assembly}
+          morph={morphPlayback}
           editable={editable}
           onMoveVoxel={onMoveVoxel}
-          onSelect={onSelect}
+          onSelect={handleCanvasSelect}
+          onContextMenuVoxel={handleOpenRadialForVoxel}
+          onOrbitStart={handleOrbitStart}
+          projectVoxelRef={projectVoxelRef}
         />
 
-        {/* Top overlay row: selection chip (left) + fit button (right). Never blocks the canvas. */}
+        {/* Top overlay row: selection chip (left) + morph controls & fit button (right). Never blocks canvas. */}
         <div className="pointer-events-none absolute inset-x-3 top-3 flex items-start justify-between gap-2">
           <div className="flex min-w-0 flex-1 flex-col items-start gap-1.5">
             {selection && (
               <SelectionChip
                 ir={ir}
                 room={room}
+                mode={mode}
                 selection={selection}
                 thermal={thermal}
-                onClear={() => onSelect(null)}
+                physics={physics.byVoxel}
+                canOpenRadial={editable}
+                onOpenRadial={handleOpenRadialFromChip}
+                onClear={() => {
+                  setRadialAnchor(null);
+                  onSelect(null);
+                }}
               />
             )}
             {editable && <NudgePad onNudge={nudge} />}
           </div>
-          <button
-            type="button"
-            onClick={onFit}
-            title="Fit view to assembly"
-            className="pointer-events-auto flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-slate-700/80 bg-[#0b1020]/90 px-2 text-[11px] font-medium text-slate-300 shadow-lg backdrop-blur hover:border-slate-500 hover:text-white"
-          >
-            <FitIcon className="h-3.5 w-3.5" />
-            Fit
-          </button>
+
+          <div className="flex shrink-0 items-center gap-1.5">
+            {(canMorphFurniture || activeMorph) && (
+              <div
+                className="pointer-events-auto flex h-7 items-center gap-1 rounded-md border border-slate-700/80 bg-[#0b1020]/90 px-1.5 shadow-lg backdrop-blur"
+                role="group"
+                aria-label="Morph furniture reconfiguration"
+              >
+                <span className="px-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                  Morph
+                </span>
+                {MORPH_CYCLE_IDS.map((id) => {
+                  const isCurrent = !activeMorph && id === galleryId;
+                  const isTarget = activeMorph?.targetItem.id === id;
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      disabled={isCurrent || Boolean(activeMorph)}
+                      onClick={() => startMorphTo(id)}
+                      title={`Reconfigure via pivoting & traversal into ${MORPH_LABELS[id]}`}
+                      className={`h-5 rounded px-1.5 text-[10.5px] font-medium transition-colors ${
+                        isTarget
+                          ? 'bg-sky-500/30 text-sky-100 ring-1 ring-sky-400/70'
+                          : isCurrent
+                            ? 'bg-slate-800 text-slate-200'
+                            : 'text-slate-400 hover:bg-slate-800/90 hover:text-sky-200 disabled:opacity-50'
+                      }`}
+                    >
+                      {MORPH_LABELS[id]}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={onFit}
+              title="Fit view to assembly"
+              className="pointer-events-auto flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-slate-700/80 bg-[#0b1020]/90 px-2 text-[11px] font-medium text-slate-300 shadow-lg backdrop-blur hover:border-slate-500 hover:text-white"
+            >
+              <FitIcon className="h-3.5 w-3.5" />
+              Fit
+            </button>
+          </div>
         </div>
 
+        {/* Non-blocking contextual Radial Menu anchored to selected/right-clicked voxel */}
+        {radialAnchor && (
+          <RadialMenu
+            anchor={radialAnchor}
+            bounds={stageBounds}
+            onSwapType={onSwapVoxelType}
+            onAddNeighbor={onAddNeighbor}
+            onDelete={onDeleteVoxel}
+            onClose={() => setRadialAnchor(null)}
+          />
+        )}
+
+        {/* Bottom-left mode legend */}
         <div className="pointer-events-none absolute bottom-3 left-3">
-          <Legend mode={mode} />
+          <Legend mode={mode} physicsSummary={physics.summary} />
         </div>
+
+        {/* Bottom-right Physics FEA Simulation Results Summary (Physics mode only) */}
+        {mode === 'Physics' && ir && ir.voxels.length > 0 && (
+          <div className="pointer-events-none absolute bottom-3 right-3">
+            <PhysicsSummaryBar summary={physics.summary} />
+          </div>
+        )}
       </div>
 
       {plan && <AssemblyPlaybar plan={plan} playback={playback} />}
@@ -302,13 +629,19 @@ export const ViewportPanel: React.FC<ViewportPanelProps> = ({
           </span>
         </div>
         <div className="min-w-0 truncate text-right">
-          {notice ? (
+          {activeMorph ? (
+            <span className="font-mono text-sky-300">
+              Morphing → {activeMorph.targetItem.name} (step{' '}
+              {Math.min(activeMorph.plan.steps.length, Math.floor(activeMorph.progress) + 1)}/
+              {activeMorph.plan.steps.length})
+            </span>
+          ) : notice ? (
             <span className="text-sky-300">{notice}</span>
           ) : (
             <span className="text-slate-500">
               {editable
-                ? 'Drag an axis arrow, or use ←→↑↓ PgUp/PgDn, to move the voxel'
-                : 'Click a voxel or furniture item to inspect'}
+                ? 'Right-click a voxel for Radial actions · drag axis arrows or press ←→↑↓ PgUp/PgDn to move'
+                : 'Click to inspect · right-click any voxel for Radial menu'}
             </span>
           )}
         </div>

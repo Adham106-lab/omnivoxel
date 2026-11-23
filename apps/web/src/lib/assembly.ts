@@ -101,6 +101,22 @@ export interface AssemblyStep {
   docking: DockingSpec;
 }
 
+export interface LaunchRailSpec {
+  /** Exit gate centre on the container's +X outer wall (world mm). */
+  dockExitMm: Vec3;
+  /** Lattice entry point flush with the assembly's -X face (world mm). */
+  latticeEntryMm: Vec3;
+  /** First free rail-staging cell centre right outside the lattice -X face (world mm). */
+  entryCellCenterMm: Vec3;
+  /** Rail deck width across Y (mm). */
+  widthMm: number;
+  /** Rail guide deck top Z (mm), flush with `dock.floorZMm`. */
+  floorZMm: number;
+  /** Open exit portal span in Y on the container's +X wall (mm). */
+  gateYMinMm: number;
+  gateYMaxMm: number;
+}
+
 export interface DockSpec {
   /** Outer box, mm. */
   minMm: Vec3;
@@ -117,6 +133,8 @@ export interface DockSpec {
   rows: number;
   slotPitchMm: number;
   slots: Vec3[];
+  /** Machined launch rail / docking bridge connecting the container +X gate to the lattice entry. */
+  rail: LaunchRailSpec;
 }
 
 export interface AssemblyPlan {
@@ -465,7 +483,8 @@ export function orderVoxels(ir: VoxelIR): VoxelInstance[] {
 function buildDock(
   count: number,
   pitchMm: number,
-  assembly: Box
+  assembly: Box,
+  entryY?: number
 ): DockSpec {
   const n = Math.max(1, count);
   const cols = Math.ceil(Math.sqrt(n));
@@ -476,37 +495,61 @@ function buildDock(
   const innerD = rows * cell + margin;
   const wall = pitchMm * 0.06;
   const floorT = pitchMm * 0.09;
-  const wallHeight = pitchMm * 1.3;
-  const gap = pitchMm * 0.9;
+  const wallHeight = pitchMm * 1.25;
+  // Bridge span between container +X wall and lattice -X boundary (wide enough for a full launch rail)
+  const gap = pitchMm * 1.15;
 
   const floorZ = assembly.min.z;
   const outerW = innerW + 2 * wall;
   const outerD = innerD + 2 * wall;
 
-  // Container sits beside the assembly on its -X side, centred on Y
+  // Align the container and its Launch Rail with the keystone / lattice entry Y
+  const railY = entryY ?? (assembly.min.y + assembly.max.y) / 2;
   const cx = assembly.min.x - gap - outerW / 2;
-  const cy = (assembly.min.y + assembly.max.y) / 2;
+  const cy = railY;
 
   const innerMin = v3(cx - innerW / 2, cy - innerD / 2, floorZ);
   const innerMax = v3(cx + innerW / 2, cy + innerD / 2, floorZ + wallHeight);
+  const maxX = innerMax.x + wall;
+
+  // Order rows outward from the rail centreline so modules nearest the exit gate
+  // always vacate first — leaving a clear floor aisle to the +X gate for every step.
+  const rowIndices = Array.from({ length: rows }, (_, r) => r).sort((a, b) => {
+    const ya = innerMin.y + margin / 2 + (a + 0.5) * cell;
+    const yb = innerMin.y + margin / 2 + (b + 0.5) * cell;
+    return Math.abs(ya - railY) - Math.abs(yb - railY) || a - b;
+  });
 
   const slots: Vec3[] = [];
-  for (let k = 0; k < n; k++) {
-    const col = k % cols;
-    const row = Math.floor(k / cols);
-    // Fill from the edge nearest the assembly (+X) so early parts have the shortest trip
-    slots.push(
-      v3(
-        innerMax.x - margin / 2 - (col + 0.5) * cell,
-        innerMin.y + margin / 2 + (row + 0.5) * cell,
-        floorZ
-      )
-    );
+  for (const row of rowIndices) {
+    for (let col = 0; col < cols; col++) {
+      if (slots.length >= n) break;
+      // Within each row, fill from the +X gate column backward so front slots exit first
+      slots.push(
+        v3(
+          innerMax.x - margin / 2 - (col + 0.5) * cell,
+          innerMin.y + margin / 2 + (row + 0.5) * cell,
+          floorZ
+        )
+      );
+    }
   }
+
+  const railWidth = Math.min(innerD, pitchMm * 1.16);
+  const halfGate = railWidth * 0.5;
+  const rail: LaunchRailSpec = {
+    dockExitMm: v3(maxX, railY, floorZ),
+    latticeEntryMm: v3(assembly.min.x, railY, floorZ),
+    entryCellCenterMm: v3(assembly.min.x - pitchMm * 0.5, railY, floorZ + pitchMm * 0.5),
+    widthMm: railWidth,
+    floorZMm: floorZ,
+    gateYMinMm: railY - halfGate,
+    gateYMaxMm: railY + halfGate,
+  };
 
   return {
     minMm: v3(innerMin.x - wall, innerMin.y - wall, floorZ - floorT),
-    maxMm: v3(innerMax.x + wall, innerMax.y + wall, floorZ + wallHeight),
+    maxMm: v3(maxX, innerMax.y + wall, floorZ + wallHeight),
     innerMinMm: innerMin,
     innerMaxMm: innerMax,
     floorZMm: floorZ,
@@ -517,6 +560,7 @@ function buildDock(
     rows,
     slotPitchMm: cell,
     slots,
+    rail,
   };
 }
 
@@ -595,29 +639,312 @@ interface TransitSplit {
   transitPath: Vec3[];
 }
 
+/** Removes redundant collinear interior waypoints from an orthogonal/piecewise path. */
+function simplifyCollinear(points: readonly Vec3[]): Vec3[] {
+  const pts = dedupe([...points]);
+  if (pts.length <= 2) return pts;
+  const out: Vec3[] = [pts[0]];
+  for (let i = 1; i < pts.length - 1; i++) {
+    const a = out[out.length - 1];
+    const b = pts[i];
+    const c = pts[i + 1];
+    const ab = sub3(b, a);
+    const bc = sub3(c, b);
+    const lenA = Math.hypot(ab.x, ab.y, ab.z);
+    const lenB = Math.hypot(bc.x, bc.y, bc.z);
+    if (lenA < 1e-6 || lenB < 1e-6) continue;
+    const align = dot3(ab, bc) / (lenA * lenB);
+    if (align > 0.9995) continue;
+    out.push(b);
+  }
+  out.push(pts[pts.length - 1]);
+  return out;
+}
+
+const GRID_NEIGHBORS_6: readonly Vec3[] = [
+  v3(1, 0, 0),
+  v3(-1, 0, 0),
+  v3(0, 1, 0),
+  v3(0, -1, 0),
+  v3(0, 0, 1),
+  v3(0, 0, -1),
+];
+
 /**
- * Builds candidate low-clearance point-to-point paths split into:
- *  - `launchPath`: crisp vertical lift-off from `slot` to clear the container rim,
- *  - `travelPath`: low-altitude glide from the container rim to `stagingPoint`.
+ * Deterministic weighted 3D grid search from the Launch Rail entry cell
+ * across free cells hugging the already-placed lattice surface to `stagingPoint`.
+ *
+ * Strongly prefers cells face- or edge-adjacent to placed modules (modular
+ * robot surface traversal) and stays at floor level when entering the lattice,
+ * avoiding arbitrary high-altitude mid-air flights.
+ */
+function findSurfaceLatticePath(
+  entryWorld: Vec3,
+  stagingPoint: Vec3,
+  half: Vec3,
+  gridOrigin: Vec3,
+  pitch: number,
+  placedBoxes: readonly Box[],
+  dockBox: Box
+): Vec3[] | null {
+  const obstacles = [...placedBoxes, dockBox];
+  if (pointHitsBox(entryWorld, half, dockBox)) return null;
+  for (const b of placedBoxes) {
+    if (pointHitsBox(entryWorld, half, b)) return null;
+  }
+
+  const toCell = (p: Vec3): Coord3D => ({
+    x: Math.round((p.x - gridOrigin.x) / pitch),
+    y: Math.round((p.y - gridOrigin.y) / pitch),
+    z: Math.round((p.z - gridOrigin.z) / pitch),
+  });
+  const toWorld = (c: Coord3D): Vec3 =>
+    v3(gridOrigin.x + c.x * pitch, gridOrigin.y + c.y * pitch, gridOrigin.z + c.z * pitch);
+  const keyOf = (c: Coord3D) => `${c.x},${c.y},${c.z}`;
+
+  const startCell = toCell(entryWorld);
+  const goalCell = toCell(stagingPoint);
+  const startWorld = toWorld(startCell);
+  const goalWorld = toWorld(goalCell);
+
+  // Verify small alignment bridge between entryWorld -> startWorld and goalWorld -> stagingPoint
+  if (!same(entryWorld, startWorld) && !pathClear([entryWorld, startWorld], half, obstacles)) {
+    return null;
+  }
+  if (!same(goalWorld, stagingPoint) && !pathClear([goalWorld, stagingPoint], half, obstacles)) {
+    return null;
+  }
+
+  // Search bounds tightly enclose the rail entry, placed lattice, and staging point
+  let minGx = Math.min(startCell.x, goalCell.x);
+  let maxGx = Math.max(startCell.x, goalCell.x);
+  let minGy = Math.min(startCell.y, goalCell.y);
+  let maxGy = Math.max(startCell.y, goalCell.y);
+  let minGz = Math.min(startCell.z, goalCell.z, 0);
+  let maxGz = Math.max(startCell.z, goalCell.z, 0);
+
+  const placedCells: Coord3D[] = [];
+  for (const b of placedBoxes) {
+    const c = toCell(centerOf(b));
+    placedCells.push(c);
+    if (c.x < minGx) minGx = c.x;
+    if (c.x > maxGx) maxGx = c.x;
+    if (c.y < minGy) minGy = c.y;
+    if (c.y > maxGy) maxGy = c.y;
+    if (c.z < minGz) minGz = c.z;
+    if (c.z > maxGz) maxGz = c.z;
+  }
+
+  minGx -= 1;
+  maxGx += 1;
+  minGy -= 2;
+  maxGy += 2;
+  minGz = Math.min(minGz, 0);
+  maxGz += 2;
+
+  // Cap search volume for huge assemblies so planning remains sub-millisecond
+  if ((maxGx - minGx + 1) * (maxGy - minGy + 1) * (maxGz - minGz + 1) > 4500) {
+    return null;
+  }
+
+  // Precompute surface-skin cells (6- or 18-connected to any placed voxel)
+  const skinSet = new Set<string>();
+  for (const p of placedCells) {
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dz = -1; dz <= 1; dz++) {
+          if (Math.abs(dx) + Math.abs(dy) + Math.abs(dz) <= 2) {
+            skinSet.add(`${p.x + dx},${p.y + dy},${p.z + dz}`);
+          }
+        }
+      }
+    }
+  }
+
+  const startKey = keyOf(startCell);
+  const goalKey = keyOf(goalCell);
+
+  // Small binary-free Dijkstra (search space is typically < 300 nodes)
+  const distCost = new Map<string, number>([[startKey, 0]]);
+  const parent = new Map<string, string>();
+  const cellMap = new Map<string, Coord3D>([[startKey, startCell]]);
+  const closed = new Set<string>();
+  const open: string[] = [startKey];
+
+  let found = false;
+  while (open.length > 0) {
+    let bestIdx = 0;
+    let bestCost = distCost.get(open[0])!;
+    for (let i = 1; i < open.length; i++) {
+      const c = distCost.get(open[i])!;
+      if (c < bestCost) {
+        bestCost = c;
+        bestIdx = i;
+      }
+    }
+    const currKey = open.splice(bestIdx, 1)[0];
+    if (closed.has(currKey)) continue;
+    closed.add(currKey);
+
+    if (currKey === goalKey) {
+      found = true;
+      break;
+    }
+
+    const curr = cellMap.get(currKey)!;
+    const currWorld = toWorld(curr);
+
+    for (const d of GRID_NEIGHBORS_6) {
+      const nx = curr.x + d.x;
+      const ny = curr.y + d.y;
+      const nz = curr.z + d.z;
+      if (nx < minGx || nx > maxGx || ny < minGy || ny > maxGy || nz < minGz || nz > maxGz) {
+        continue;
+      }
+      const next: Coord3D = { x: nx, y: ny, z: nz };
+      const nextKey = keyOf(next);
+      if (closed.has(nextKey)) continue;
+
+      const nextWorld = toWorld(next);
+      if (!pathClear([currWorld, nextWorld], half, obstacles)) continue;
+
+      // Strongly favour cells touching the placed lattice skin, then floor-level rail approach,
+      // and penalise floating open-air detours so modules visibly hug the lattice.
+      const onSkin = skinSet.has(nextKey);
+      const onFloor = nz === startCell.z;
+      const stepCost =
+        (onSkin ? 1.0 : onFloor ? 1.25 : 4.5) +
+        (d.z > 0 ? 0.15 : 0) +
+        (d.z < 0 ? 0.05 : 0);
+
+      const tentative = bestCost + stepCost;
+      const existing = distCost.get(nextKey);
+      if (existing === undefined || tentative < existing) {
+        distCost.set(nextKey, tentative);
+        parent.set(nextKey, currKey);
+        cellMap.set(nextKey, next);
+        if (existing === undefined) open.push(nextKey);
+      }
+    }
+  }
+
+  if (!found) return null;
+
+  const chain: Vec3[] = [];
+  let cursor: string | undefined = goalKey;
+  while (cursor !== undefined) {
+    chain.push(toWorld(cellMap.get(cursor)!));
+    cursor = parent.get(cursor);
+  }
+  chain.reverse();
+
+  return simplifyCollinear([entryWorld, ...chain, stagingPoint]);
+}
+
+/**
+ * Builds candidate continuous container → Launch Rail → lattice paths split into:
+ *  - `launchPath`: low-clearance glide from `slot` through the container's open
+ *                  +X exit gate onto the Launch Rail (`rail.entryCellCenterMm`),
+ *  - `travelPath`: connected lattice surface traversal from the Launch Rail entry
+ *                  point to `stagingPoint` (falling back to a low guided corridor
+ *                  only if no surface-connected route exists).
  */
 function findTransitPath(
   slot: Vec3,
   stagingPoint: Vec3,
   half: Vec3,
   dock: DockSpec,
+  gridOrigin: Vec3,
   placedBoxes: readonly Box[],
   placedMaxZ: number,
   globalFallbackZ: number,
   pitch: number
 ): TransitSplit | null {
   const dockBox: Box = { min: dock.minMm, max: dock.maxMm };
+  const externalObstacles = [...placedBoxes, dockBox];
+
+  // --- Primary path: Continuous glide out the +X container gate along the Launch Rail ---
+  const railZ = dock.floorZMm + half.z;
+  const railY = dock.rail.dockExitMm.y;
+  const frontLaneX = Math.max(slot.x, dock.innerMaxMm.x - half.x - Math.max(4, pitch * 0.04));
+  const gateExit = v3(dock.rail.dockExitMm.x, railY, railZ);
+  const railEntry = v3(dock.rail.entryCellCenterMm.x, railY, railZ);
+
+  const railLaunch = simplifyCollinear([
+    slot,
+    v3(frontLaneX, slot.y, railZ),
+    v3(frontLaneX, railY, railZ),
+    gateExit,
+    railEntry,
+  ]);
+
+  if (pathClear(railLaunch, half, placedBoxes)) {
+    // 1a. Keystone / empty lattice: glide straight at floor height along the rail into staging
+    if (placedBoxes.length === 0) {
+      const straight = simplifyCollinear([
+        railEntry,
+        v3(railEntry.x, stagingPoint.y, railZ),
+        v3(stagingPoint.x, stagingPoint.y, railZ),
+        stagingPoint,
+      ]);
+      if (pathClear(straight, half, externalObstacles)) {
+        return {
+          launchPath: railLaunch,
+          travelPath: straight,
+          transitPath: simplifyCollinear([...railLaunch, ...straight]),
+        };
+      }
+    }
+
+    // 1b. Connected lattice surface traversal from the Launch Rail entry cell to stagingPoint
+    const surfacePath = findSurfaceLatticePath(
+      railEntry,
+      stagingPoint,
+      half,
+      gridOrigin,
+      pitch,
+      placedBoxes,
+      dockBox
+    );
+    if (surfacePath) {
+      return {
+        launchPath: railLaunch,
+        travelPath: surfacePath,
+        transitPath: simplifyCollinear([...railLaunch, ...surfacePath]),
+      };
+    }
+
+    // 1c. Direct rail-to-staging low corridor if stagingPoint is off-grid
+    const directRail = simplifyCollinear([railEntry, stagingPoint]);
+    if (pathClear(directRail, half, externalObstacles)) {
+      return {
+        launchPath: railLaunch,
+        travelPath: directRail,
+        transitPath: simplifyCollinear([...railLaunch, ...directRail]),
+      };
+    }
+
+    const railElevZ = Math.max(stagingPoint.z, placedMaxZ + half.z + Math.max(18, pitch * 0.14));
+    const railStepUp = simplifyCollinear([
+      railEntry,
+      v3(railEntry.x, railEntry.y, railElevZ),
+      v3(stagingPoint.x, stagingPoint.y, railElevZ),
+      stagingPoint,
+    ]);
+    if (pathClear(railStepUp, half, externalObstacles)) {
+      return {
+        launchPath: railLaunch,
+        travelPath: railStepUp,
+        transitPath: simplifyCollinear([...railLaunch, ...railStepUp]),
+      };
+    }
+  }
+
+  // --- Secondary fallback: clear container rim if rail entry is somehow obstructed ---
   const rimClearZ = dock.floorZMm + dock.wallHeightMm + half.z + Math.max(14, pitch * 0.1);
   const dockExitX = dock.maxMm.x + half.x + Math.max(14, pitch * 0.12);
-
   const exitRim = v3(slot.x, slot.y, Math.max(rimClearZ, slot.z));
   const portal = v3(dockExitX, slot.y, exitRim.z);
-
-  const externalObstacles = [...placedBoxes, dockBox];
 
   const verify = (externalLegs: Vec3[]): TransitSplit | null => {
     const launchPath = dedupe([slot, exitRim]);
@@ -633,11 +960,9 @@ function findTransitPath(
     };
   };
 
-  // 1. Direct glide from the container lip portal straight to stagingPoint (lowest & smoothest)
   const direct = verify([]);
   if (direct) return direct;
 
-  // 2. Low-altitude guided transfer corridors at escalating heights (starting at staging altitude)
   const lowPlacedClearZ = placedMaxZ + half.z + Math.max(18, pitch * 0.14);
   const rawHeights = [
     stagingPoint.z,
@@ -651,7 +976,6 @@ function findTransitPath(
   }
 
   for (const z of heights) {
-    // 2a. Match altitude at portal, glide laterally in Y then X to staging
     const yThenX = verify([
       v3(dockExitX, slot.y, z),
       v3(dockExitX, stagingPoint.y, z),
@@ -659,14 +983,12 @@ function findTransitPath(
     ]);
     if (yThenX) return yThenX;
 
-    // 2b. Match altitude at portal, glide diagonally in XY to above/below staging
     const diagXY = verify([
       v3(dockExitX, slot.y, z),
       v3(stagingPoint.x, stagingPoint.y, z),
     ]);
     if (diagXY) return diagXY;
 
-    // 2c. High lift directly above slot when needed to clear an overhang right next to dock
     const liftPt = v3(slot.x, slot.y, z);
     const highLaunch = dedupe([slot, liftPt]);
     const highTravel = dedupe([liftPt, v3(stagingPoint.x, stagingPoint.y, z), stagingPoint]);
@@ -680,7 +1002,7 @@ function findTransitPath(
 }
 
 /**
- * Plans the full container → lattice assembly sequence for an IR.
+ * Plans the full container → Launch Rail → lattice assembly sequence for an IR.
  */
 export function planAssembly(ir: VoxelIR): AssemblyPlan {
   const ordered = orderVoxels(ir);
@@ -707,7 +1029,14 @@ export function planAssembly(ir: VoxelIR): AssemblyPlan {
   }
   if (pitch <= 0) pitch = 150;
 
-  const dock = buildDock(ordered.length, pitch, asm);
+  // Align the container's Launch Rail Y directly with the keystone voxel
+  const keystoneTarget = ordered.length > 0 ? centerOf(boxes.get(ordered[0].id)!) : null;
+  const dock = buildDock(ordered.length, pitch, asm, keystoneTarget?.y);
+  const gridOrigin = v3(
+    asm.min.x + pitch * 0.5,
+    keystoneTarget ? keystoneTarget.y : asm.min.y + pitch * 0.5,
+    asm.min.z + pitch * 0.5
+  );
   const topOfStuff = Math.max(asm.max.z, dock.floorZMm + dock.wallHeightMm);
 
   const neighbours = new Map<string, Set<string>>();
@@ -821,6 +1150,7 @@ export function planAssembly(ir: VoxelIR): AssemblyPlan {
                 stagingPoint,
                 half,
                 dock,
+                gridOrigin,
                 placedBoxes,
                 placedMaxZ,
                 globalFallbackZ,
@@ -861,7 +1191,7 @@ export function planAssembly(ir: VoxelIR): AssemblyPlan {
 
       const candidateDirs =
         anchorIds.length === 0
-          ? [v3(0, 0, 1), ...FALLBACK_APPROACH_DIRS.filter((d) => d.z === 0), v3(0, 0, -1)]
+          ? [v3(-1, 0, 0), v3(0, 0, 1), ...FALLBACK_APPROACH_DIRS.filter((d) => d.x === 0 && d.z === 0), v3(1, 0, 0), v3(0, 0, -1)]
           : [
               ...anchorNormals,
               ...FALLBACK_APPROACH_DIRS.filter(
@@ -884,6 +1214,7 @@ export function planAssembly(ir: VoxelIR): AssemblyPlan {
             stagingPoint,
             half,
             dock,
+            gridOrigin,
             placedBoxes,
             placedMaxZ,
             globalFallbackZ,

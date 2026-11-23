@@ -1,6 +1,6 @@
-export type VisualMode = 'Assembly' | 'Thermal' | 'Bus';
+export type VisualMode = 'Assembly' | 'Thermal' | 'Bus' | 'Physics';
 
-export const VISUAL_MODES: readonly VisualMode[] = ['Assembly', 'Thermal', 'Bus'] as const;
+export const VISUAL_MODES: readonly VisualMode[] = ['Assembly', 'Thermal', 'Bus', 'Physics'] as const;
 
 /** Current 3D selection. Stored in React state but never triggers a scene rebuild. */
 export type Selection =

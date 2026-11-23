@@ -17,6 +17,8 @@ import {
 import type { Guides, IssueSeverity, Selection, VisualMode } from '../types';
 import { BUS_COLORS, CATEGORY_STYLE, OBSTACLE_DEFAULT_COLOR } from '../lib/theme';
 import { thermalHex, type VoxelThermal } from '../lib/thermal';
+import { stressHex, type VoxelPhysics } from '../lib/physics';
+import { sampleMorphPose, type MorphPlan } from '../lib/morph';
 import {
   deriveJointAxis,
   sampleStepPose,
@@ -30,11 +32,13 @@ import {
   buildMoveHandles,
   buildPivotArcGuide,
   buildPivotMarker,
-  buildVoxelDetails,
+  buildTrussLatticeGeometry,
+  buildVoxelModel,
   orientConnector,
   type HandlePick,
   type LatchDirection,
   type LinkConnectorRig,
+  type VoxelModelRig,
 } from '../lib/voxelModels';
 import { buildDockModel } from '../lib/dockModel';
 
@@ -47,6 +51,11 @@ const MOVE_LATCH_DURATION = 0.5;
 
 const EDGE_COLOR = { idle: 0x0b1220, selected: 0xe0f2fe, error: 0xf87171, warning: 0xfbbf24 } as const;
 
+export interface MorphPlayback {
+  plan: MorphPlan;
+  progress: number;
+}
+
 interface SceneCanvasProps {
   ir: VoxelIR | null;
   room: RoomEnvironment;
@@ -54,15 +63,24 @@ interface SceneCanvasProps {
   selection: Selection;
   issues: Map<string, IssueSeverity>;
   thermal: Map<string, VoxelThermal>;
+  physics: Map<string, VoxelPhysics>;
   guides: Guides;
   cameraTrigger: number;
   /** Container → lattice playback state. `progress` runs 0..steps.length. */
   assembly: AssemblyPlayback;
+  /** Optional active furniture reconfiguration morph (Chair ↔ Table ↔ Couch). */
+  morph?: MorphPlayback | null;
   /** Voxel move handles are only offered when true (assembly complete). */
   editable: boolean;
   /** Request a move to a new lattice cell; resolves true when it was applied. */
   onMoveVoxel: (id: string, coord: Coord3D) => boolean;
   onSelect: (selection: Selection) => void;
+  /** Invoked on right-click over a voxel to open the contextual Radial Menu. */
+  onContextMenuVoxel?: (voxelId: string, x: number, y: number) => void;
+  /** Invoked when camera orbit/pan starts so transient menus can dismiss cleanly. */
+  onOrbitStart?: () => void;
+  /** Projects a voxel's current 3D center into canvas-local 2D coordinates. */
+  projectVoxelRef?: React.MutableRefObject<((id: string) => { x: number; y: number } | null) | null>;
 }
 
 export interface AssemblyPlayback {
@@ -73,17 +91,24 @@ export interface AssemblyPlayback {
 interface VoxelEntry {
   id: string;
   group: THREE.Group;
-  body: THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial>;
+  /** Invisible full-cell raycast hit target so slim slabs & skeletal frames click effortlessly. */
+  pickProxy: THREE.Mesh<THREE.BoxGeometry, THREE.MeshBasicMaterial>;
+  /** Full-cell volumetric body shown only in Thermal and Bus modes. */
+  overlayBody: THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial>;
+  /** Open cuboctahedron cellular truss lattice shown in Physics FEA mode. */
+  trussMesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>;
   edges: THREE.LineSegments<THREE.EdgesGeometry, THREE.LineBasicMaterial>;
-  details: THREE.Group;
+  /** Realistic per-module 3D silhouette rig (shown in Assembly mode). */
+  model: VoxelModelRig;
   /** Hinge-axis overlay (actuated voxels only). */
   joint: THREE.Group | null;
   category: VoxelCategory;
   heat: number;
+  stressRatio: number;
   coord: Coord3D;
   /** Lattice pitch (m) per axis. */
   stepM: THREE.Vector3;
-  /** Rendered body size (m). */
+  /** Rendered cell size (m). */
   sizeM: THREE.Vector3;
 }
 
@@ -163,15 +188,18 @@ interface Rig {
   /** Move handles for the selected voxel (outside `content`, so rebuilds don't drop a drag). */
   handles: THREE.Group | null;
   ghost: THREE.LineSegments | null;
-  /** Transient unlatching connectors spawned when a voxel moves away from a neighbor. */
+  /** Transient unlatching connectors spawned when a voxel moves away or detaches. */
   transientGroup: THREE.Group;
+  /** Dynamic hinge + arc guide rendered during live Morph reconfiguration. */
+  morphGuideGroup: THREE.Group;
+  morphGuideStepKey: string | null;
   detaching: DetachingConnector[];
   /** Newly formed links animating 0 → 1 after a voxel moves next to a neighbor. */
   attaching: Map<string, AttachingLink>;
   /** Live pre-release tension applied while pulling a selected voxel along an axis arrow. */
   dragTension: DragTension | null;
-  /** Previous IR link snapshot used to detect broken/newly formed joints on voxel moves. */
-  prevSnapshot: { voxelIdsKey: string; links: Map<string, LinkSnapshot> } | null;
+  /** Previous IR link snapshot used to detect broken/newly formed joints on voxel moves or deletes. */
+  prevSnapshot: { voxelIds: Set<string>; links: Map<string, LinkSnapshot> } | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +252,7 @@ function buildContent(
   room: RoomEnvironment,
   guides: Guides,
   thermal: Map<string, VoxelThermal>,
+  physics: Map<string, VoxelPhysics>,
   plan: AssemblyPlan | null
 ): Content {
   const root = new THREE.Group();
@@ -326,7 +355,11 @@ function buildContent(
       const style = CATEGORY_STYLE[category];
 
       const geometry = new THREE.BoxGeometry(sx, sy, sz);
-      const body = new THREE.Mesh(
+      const pickProxy = new THREE.Mesh(
+        geometry,
+        new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false })
+      );
+      const overlayBody = new THREE.Mesh(
         geometry,
         new THREE.MeshStandardMaterial({
           color: style.hex,
@@ -335,32 +368,58 @@ function buildContent(
           envMapIntensity: 0.6,
         })
       );
+      overlayBody.visible = false;
+
+      const stressRatio = physics.get(v.id)?.stressRatio ?? 0.1;
+      const trussMesh = new THREE.Mesh(
+        buildTrussLatticeGeometry(sx, sy, sz, 1.08),
+        new THREE.MeshStandardMaterial({
+          color: stressHex(stressRatio),
+          metalness: 0.42,
+          roughness: 0.34,
+          envMapIntensity: 0.65,
+        })
+      );
+      trussMesh.visible = false;
+
       const edges = new THREE.LineSegments(
         new THREE.EdgesGeometry(geometry),
         new THREE.LineBasicMaterial({ color: EDGE_COLOR.idle, transparent: true })
       );
       const jointAxis: Axis | null = category === 'actuated' ? deriveJointAxis(ir, v.id) : null;
-      const details = buildVoxelDetails(category, sx, sy, sz, jointAxis ?? 'y');
+      const hsMounted = ir.getLinks(v.id).some((l) => l.highSpeedPlane.connected);
+      const model = buildVoxelModel(
+        v.manifest.id,
+        category,
+        sx,
+        sy,
+        sz,
+        jointAxis ?? 'y',
+        hsMounted
+      );
       const joint = jointAxis ? buildPivotMarker(jointAxis, sx, sy, sz) : null;
 
       const group = new THREE.Group();
       group.position.copy(center);
-      group.add(body, edges, details);
+      group.add(pickProxy, overlayBody, trussMesh, edges, model.group);
       if (joint) group.add(joint);
-      body.userData.id = v.id;
+      pickProxy.userData.id = v.id;
       root.add(group);
-      pickVoxels.push(body);
+      pickVoxels.push(pickProxy);
 
       const dim = v.manifest.mechanical.dimensionsMm;
       voxels.set(v.id, {
         id: v.id,
         group,
-        body,
+        pickProxy,
+        overlayBody,
+        trussMesh,
         edges,
-        details,
+        model,
         joint,
         category,
         heat: thermal.get(v.id)?.heat ?? 0,
+        stressRatio,
         coord: v.coord,
         stepM: new THREE.Vector3(dim.x, dim.y, dim.z).multiplyScalar(MM),
         sizeM: new THREE.Vector3(sx, sy, sz),
@@ -660,92 +719,122 @@ export const SceneCanvas: React.FC<SceneCanvasProps> = (props) => {
     const rig = rigRef.current;
     const content = rig?.content;
     if (!rig || !content) return;
-    const { mode, selection, issues } = propsRef.current;
+    const { mode, selection, issues, morph } = propsRef.current;
     const hover = hoverRef.current;
+    const morphActive = Boolean(morph);
 
     const { plan, progress } = propsRef.current.assembly;
     const total = plan?.steps.length ?? 0;
     const complete = total === 0 || progress >= total - 1e-6;
-    const activeId = !complete && plan ? plan.steps[Math.min(total - 1, Math.floor(progress))]?.voxelId : null;
+    const activeId = morphActive
+      ? lastActiveRef.current
+      : !complete && plan
+        ? plan.steps[Math.min(total - 1, Math.floor(progress))]?.voxelId ?? null
+        : null;
 
-    content.links.visible = mode === 'Bus';
-    content.connectors.visible = mode !== 'Thermal';
-    rig.transientGroup.visible = mode !== 'Thermal';
-    // Joint axes are an engineering overlay: Assembly + Bus views only
-    if (content.dock) content.dock.visible = mode === 'Assembly' || !complete;
+    content.links.visible = mode === 'Bus' && !morphActive;
+    content.connectors.visible = mode !== 'Thermal' && mode !== 'Physics' && !morphActive;
+    rig.transientGroup.visible = mode !== 'Thermal' && mode !== 'Physics' && !morphActive;
+    if (content.dock) content.dock.visible = !morphActive && (mode === 'Assembly' || !complete);
 
     for (const entry of content.voxels.values()) {
-      if (entry.joint) entry.joint.visible = mode !== 'Thermal';
-      const material = entry.body.material;
+      if (entry.joint) entry.joint.visible = mode !== 'Thermal' && mode !== 'Physics';
+      const material = entry.overlayBody.material;
+      const trussMat = entry.trussMesh.material;
       const isSelected = selection?.kind === 'voxel' && selection.id === entry.id;
       const isHovered = hover === `v:${entry.id}`;
       const issue = issues.get(entry.id);
-      const style = CATEGORY_STYLE[entry.category];
-
-      let transparent = false;
-      let opacity = 1;
-      let baseEmissive = 0x000000;
-      let baseEmissiveIntensity = 0;
-
-      if (mode === 'Assembly') {
-        material.color.setHex(style.hex);
-        material.metalness = style.metalness;
-        material.roughness = style.roughness;
-        entry.details.visible = true;
-      } else if (mode === 'Thermal') {
-        const hex = thermalHex(entry.heat);
-        material.color.setHex(hex);
-        material.metalness = 0.1;
-        material.roughness = 0.55;
-        baseEmissive = hex;
-        baseEmissiveIntensity = 0.28;
-        // Cooler voxels turn translucent so an enclosed hot source still reads
-        transparent = true;
-        opacity = isSelected ? 0.92 : 0.3 + 0.7 * Math.min(1, entry.heat / 0.8);
-        entry.details.visible = false;
-      } else {
-        material.color.setHex(0x334155);
-        material.metalness = 0.1;
-        material.roughness = 0.7;
-        transparent = true;
-        opacity = isSelected ? 0.6 : 0.28;
-        entry.details.visible = false;
-      }
-
-      if (material.transparent !== transparent) {
-        material.transparent = transparent;
-        material.depthWrite = !transparent;
-        material.needsUpdate = true;
-      }
-      material.opacity = opacity;
-
       const activePhase = activePhaseRef.current;
+
+      // Determine highlight emissive tint (shared across Assembly, Physics, and overlay modes)
+      let highlightHex = 0x000000;
+      let highlightIntensity = 0;
       if (isSelected) {
-        material.emissive.setHex(0x38bdf8);
-        material.emissiveIntensity = 0.5;
+        highlightHex = 0x38bdf8;
+        highlightIntensity = 0.45;
       } else if (isHovered) {
-        material.emissive.setHex(0xffffff);
-        material.emissiveIntensity = 0.16;
+        highlightHex = 0xffffff;
+        highlightIntensity = 0.14;
       } else if (activeId === entry.id) {
         if (activePhase === 'launch') {
-          material.emissive.setHex(0xf97316);
-          material.emissiveIntensity = 0.34;
+          highlightHex = 0xf97316;
+          highlightIntensity = 0.34;
         } else if (activePhase === 'catch') {
-          material.emissive.setHex(0xe879f9);
-          material.emissiveIntensity = 0.34;
+          highlightHex = 0xe879f9;
+          highlightIntensity = 0.36;
         } else if (activePhase === 'pivot' || activePhase === 'travel') {
-          material.emissive.setHex(0x38bdf8);
-          material.emissiveIntensity = 0.26;
+          highlightHex = 0x38bdf8;
+          highlightIntensity = 0.28;
         } else {
-          material.emissive.setHex(0xfbbf24);
-          material.emissiveIntensity = 0.22;
+          highlightHex = 0xfbbf24;
+          highlightIntensity = 0.22;
+        }
+      }
+
+      if (mode === 'Assembly') {
+        entry.model.group.visible = true;
+        entry.overlayBody.visible = false;
+        entry.trussMesh.visible = false;
+        for (const mat of entry.model.chassisMaterials) {
+          mat.emissive.setHex(highlightHex);
+          mat.emissiveIntensity = highlightIntensity;
+        }
+      } else if (mode === 'Physics') {
+        entry.model.group.visible = false;
+        entry.overlayBody.visible = false;
+        entry.trussMesh.visible = true;
+        const hex = stressHex(entry.stressRatio);
+        trussMat.color.setHex(hex);
+        if (highlightIntensity > 0) {
+          trussMat.emissive.setHex(highlightHex);
+          trussMat.emissiveIntensity = Math.max(highlightIntensity, 0.3);
+        } else {
+          trussMat.emissive.setHex(hex);
+          trussMat.emissiveIntensity = 0.22 + entry.stressRatio * 0.28;
         }
       } else {
-        material.emissive.setHex(baseEmissive);
-        material.emissiveIntensity = baseEmissiveIntensity;
+        entry.model.group.visible = false;
+        entry.trussMesh.visible = false;
+        entry.overlayBody.visible = true;
+
+        const transparent = true;
+        let opacity = 0.3;
+        let baseEmissive = 0x000000;
+        let baseEmissiveIntensity = 0;
+
+        if (mode === 'Thermal') {
+          const hex = thermalHex(entry.heat);
+          material.color.setHex(hex);
+          material.metalness = 0.1;
+          material.roughness = 0.55;
+          baseEmissive = hex;
+          baseEmissiveIntensity = 0.28;
+          opacity = isSelected ? 0.92 : 0.3 + 0.7 * Math.min(1, entry.heat / 0.8);
+        } else {
+          material.color.setHex(0x334155);
+          material.metalness = 0.1;
+          material.roughness = 0.7;
+          opacity = isSelected ? 0.6 : 0.28;
+        }
+
+        if (material.transparent !== transparent) {
+          material.transparent = transparent;
+          material.depthWrite = !transparent;
+          material.needsUpdate = true;
+        }
+        material.opacity = opacity;
+        if (highlightIntensity > 0) {
+          material.emissive.setHex(highlightHex);
+          material.emissiveIntensity = highlightIntensity;
+        } else {
+          material.emissive.setHex(baseEmissive);
+          material.emissiveIntensity = baseEmissiveIntensity;
+        }
       }
 
       const edgeMaterial = entry.edges.material;
+      const showEdge = isSelected || isHovered || Boolean(issue) || activeId === entry.id;
+      entry.edges.visible = mode === 'Assembly' || mode === 'Physics' ? showEdge : true;
       if (isSelected) edgeMaterial.color.setHex(EDGE_COLOR.selected);
       else if (issue === 'error') edgeMaterial.color.setHex(EDGE_COLOR.error);
       else if (issue === 'warning') edgeMaterial.color.setHex(EDGE_COLOR.warning);
@@ -753,8 +842,14 @@ export const SceneCanvas: React.FC<SceneCanvasProps> = (props) => {
         if (activePhase === 'launch') edgeMaterial.color.setHex(0xfb923c);
         else if (activePhase === 'catch') edgeMaterial.color.setHex(0x38bdf8);
         else edgeMaterial.color.setHex(0x7dd3fc);
-      } else edgeMaterial.color.setHex(mode === 'Bus' ? 0x64748b : EDGE_COLOR.idle);
-      edgeMaterial.opacity = mode === 'Bus' && !isSelected && !issue ? 0.5 : 1;
+      } else if (isHovered) edgeMaterial.color.setHex(0x94a3b8);
+      else edgeMaterial.color.setHex(mode === 'Bus' ? 0x64748b : EDGE_COLOR.idle);
+      edgeMaterial.opacity =
+        (mode === 'Assembly' || mode === 'Physics') && isHovered && !isSelected && !issue && activeId !== entry.id
+          ? 0.45
+          : mode === 'Bus' && !isSelected && !issue
+            ? 0.5
+            : 1;
     }
 
     for (const entry of content.obstacles.values()) {
@@ -781,6 +876,89 @@ export const SceneCanvas: React.FC<SceneCanvasProps> = (props) => {
     const rig = rigRef.current;
     const content = rig?.content;
     if (!rig || !content) return;
+
+    // Live Morph Reconfiguration mode (Chair ↔ Table ↔ Couch pivoting & traversal)
+    const morph = propsRef.current.morph;
+    if (morph) {
+      const sample = sampleMorphPose(morph.plan, morph.progress);
+      for (const [id, pose] of sample.poses) {
+        const entry = content.voxels.get(id);
+        if (!entry) continue;
+        entry.group.position.set(pose.position.x * MM, pose.position.y * MM, pose.position.z * MM);
+        entry.group.rotation.set(0, 0, 0);
+        if (Math.abs(pose.rotationAngleRad) > 1e-5) {
+          entry.group.rotation[pose.rotationAxis] = pose.rotationAngleRad;
+        }
+      }
+      // Hide assembly dock & step guides while morphing
+      for (const guide of content.guides.values()) {
+        guide.ghost.visible = false;
+        guide.path.visible = false;
+        if (guide.hinge) guide.hinge.visible = false;
+        if (guide.pivotArc) guide.pivotArc.visible = false;
+      }
+
+      // Render active hinge fulcrum + trajectory arc for the currently pivoting morph voxel
+      const step = sample.activeStep;
+      const stepKey = step ? `${morph.plan.targetPresetId}:${step.index}` : null;
+      if (stepKey !== rig.morphGuideStepKey) {
+        while (rig.morphGuideGroup.children.length > 0) {
+          const child = rig.morphGuideGroup.children[0];
+          rig.morphGuideGroup.remove(child);
+          disposeTree(child);
+        }
+        rig.morphGuideStepKey = stepKey;
+        if (step) {
+          const entry = content.voxels.get(step.voxelId);
+          const u = entry ? Math.min(entry.sizeM.x, entry.sizeM.y, entry.sizeM.z) : 0.14;
+          const surfPts = step.surfacePathMm.map((p) => new THREE.Vector3(p.x * MM, p.y * MM, p.z * MM));
+          if (surfPts.length >= 2) {
+            const surfLine = new THREE.Line(
+              new THREE.BufferGeometry().setFromPoints(surfPts),
+              new THREE.LineDashedMaterial({
+                color: 0xfbbf24,
+                dashSize: 0.012,
+                gapSize: 0.008,
+                transparent: true,
+                opacity: 0.85,
+              })
+            );
+            surfLine.computeLineDistances();
+            rig.morphGuideGroup.add(surfLine);
+          }
+          if (step.pivot) {
+            const pv = step.pivot;
+            const hinge = buildHingeFulcrumGuide(pv.axis, entry ? entry.sizeM[pv.axis] : u, u);
+            hinge.position.set(pv.hingePoint.x * MM, pv.hingePoint.y * MM, pv.hingePoint.z * MM);
+            rig.morphGuideGroup.add(hinge);
+            const arcPts = pv.arcPoints.map((p) => new THREE.Vector3(p.x * MM, p.y * MM, p.z * MM));
+            rig.morphGuideGroup.add(buildPivotArcGuide(arcPts, u, 0x38bdf8));
+          }
+        }
+      }
+      rig.morphGuideGroup.visible = Boolean(step);
+
+      const nextActiveId = step?.voxelId ?? null;
+      if (nextActiveId !== lastActiveRef.current || sample.activePhase !== activePhaseRef.current) {
+        lastActiveRef.current = nextActiveId;
+        activePhaseRef.current = sample.activePhase;
+        applyAppearance();
+      }
+      rig.requestRender();
+      return;
+    }
+
+    // Clear morph guides when not morphing
+    if (rig.morphGuideStepKey !== null) {
+      while (rig.morphGuideGroup.children.length > 0) {
+        const child = rig.morphGuideGroup.children[0];
+        rig.morphGuideGroup.remove(child);
+        disposeTree(child);
+      }
+      rig.morphGuideStepKey = null;
+      rig.morphGuideGroup.visible = false;
+    }
+
     const { plan, progress } = propsRef.current.assembly;
     if (!plan) return;
 
@@ -948,6 +1126,9 @@ export const SceneCanvas: React.FC<SceneCanvasProps> = (props) => {
 
     const transientGroup = new THREE.Group();
     scene.add(transientGroup);
+    const morphGuideGroup = new THREE.Group();
+    morphGuideGroup.visible = false;
+    scene.add(morphGuideGroup);
 
     const camera = new THREE.PerspectiveCamera(40, 1, 0.01, 100);
     camera.up.set(0, 0, 1); // Z-up, matching the core lattice convention
@@ -964,7 +1145,11 @@ export const SceneCanvas: React.FC<SceneCanvasProps> = (props) => {
     const requestRender = () => {
       dirty = true;
     };
+    const onControlStart = () => {
+      propsRef.current.onOrbitStart?.();
+    };
     controls.addEventListener('change', requestRender);
+    controls.addEventListener('start', onControlStart);
 
     const rig: Rig = {
       renderer,
@@ -976,6 +1161,8 @@ export const SceneCanvas: React.FC<SceneCanvasProps> = (props) => {
       handles: null,
       ghost: null,
       transientGroup,
+      morphGuideGroup,
+      morphGuideStepKey: null,
       detaching: [],
       attaching: new Map(),
       dragTension: null,
@@ -1245,6 +1432,28 @@ export const SceneCanvas: React.FC<SceneCanvasProps> = (props) => {
       }
     };
 
+    // Expose fast 3D -> 2D projection helper for RadialMenu positioning
+    if (propsRef.current.projectVoxelRef) {
+      propsRef.current.projectVoxelRef.current = (id: string) => {
+        const entry = rig.content?.voxels.get(id);
+        if (!entry) return null;
+        const projected = entry.group.position.clone().project(camera);
+        return {
+          x: ((projected.x + 1) * 0.5) * size.w,
+          y: ((1 - projected.y) * 0.5) * size.h,
+        };
+      };
+    }
+
+    const onContextMenu = (e: MouseEvent) => {
+      const hit = pick(e.offsetX, e.offsetY);
+      if (hit?.kind === 'voxel') {
+        e.preventDefault();
+        propsRef.current.onSelect(hit);
+        propsRef.current.onContextMenuVoxel?.(hit.id, e.offsetX, e.offsetY);
+      }
+    };
+
     canvas.style.cursor = 'grab';
     mount.addEventListener('pointerdown', onCaptureDown, true);
     canvas.addEventListener('pointerdown', onPointerDown);
@@ -1252,12 +1461,14 @@ export const SceneCanvas: React.FC<SceneCanvasProps> = (props) => {
     canvas.addEventListener('pointercancel', endDrag);
     canvas.addEventListener('pointermove', onPointerMove);
     canvas.addEventListener('pointerleave', onPointerLeave);
+    canvas.addEventListener('contextmenu', onContextMenu);
 
     // Window DPR changes (zoom / monitor move)
     const onWindowResize = () => applySize(mount.clientWidth, mount.clientHeight);
     window.addEventListener('resize', onWindowResize);
 
     return () => {
+      if (propsRef.current.projectVoxelRef) propsRef.current.projectVoxelRef.current = null;
       cancelAnimationFrame(raf);
       if (hoverFrame) cancelAnimationFrame(hoverFrame);
       observer.disconnect();
@@ -1269,11 +1480,15 @@ export const SceneCanvas: React.FC<SceneCanvasProps> = (props) => {
       canvas.removeEventListener('pointerup', onPointerUp);
       canvas.removeEventListener('pointermove', onPointerMove);
       canvas.removeEventListener('pointerleave', onPointerLeave);
+      canvas.removeEventListener('contextmenu', onContextMenu);
       controls.removeEventListener('change', requestRender);
+      controls.removeEventListener('start', onControlStart);
       controls.dispose();
 
       clearTransientAnims(rig);
       scene.remove(transientGroup);
+      disposeTree(morphGuideGroup);
+      scene.remove(morphGuideGroup);
 
       if (rig.handles) {
         scene.remove(rig.handles);
@@ -1309,14 +1524,19 @@ export const SceneCanvas: React.FC<SceneCanvasProps> = (props) => {
     }
     hoverRef.current = null;
 
-    const content = buildContent(props.ir, props.room, props.guides, props.thermal, props.assembly.plan);
+    const content = buildContent(
+      props.ir,
+      props.room,
+      props.guides,
+      props.thermal,
+      props.physics,
+      props.assembly.plan
+    );
     rig.scene.add(content.root);
     rig.content = content;
 
-    // Detect broken / newly formed joints when an existing voxel is moved in place
-    const nextVoxelIdsKey = props.ir
-      ? [...props.ir.voxels.map((v) => v.id)].sort().join(',')
-      : '';
+    // Detect broken / newly formed joints on voxel move, neighbor add, or radial delete
+    const nextVoxelIds = new Set<string>(props.ir ? props.ir.voxels.map((v) => v.id) : []);
     const nextLinks = new Map<string, LinkSnapshot>();
     for (const e of content.linkEntries) {
       nextLinks.set(e.key, {
@@ -1334,8 +1554,17 @@ export const SceneCanvas: React.FC<SceneCanvasProps> = (props) => {
     const total = props.assembly.plan?.steps.length ?? 0;
     const isComplete = total === 0 || props.assembly.progress >= total - 1e-6;
 
-    if (prevSnapshot && prevSnapshot.voxelIdsKey === nextVoxelIdsKey && isComplete) {
-      // Spawn visible unlatch/release animations on every broken neighbor joint
+    // True when the assembly was edited incrementally (same voxels moved, or 1 voxel added/deleted)
+    let incrementalEdit = false;
+    if (prevSnapshot && isComplete) {
+      let diffCount = 0;
+      for (const id of prevSnapshot.voxelIds) if (!nextVoxelIds.has(id)) diffCount++;
+      for (const id of nextVoxelIds) if (!prevSnapshot.voxelIds.has(id)) diffCount++;
+      incrementalEdit = diffCount <= 1 && Math.max(prevSnapshot.voxelIds.size, nextVoxelIds.size) > 0;
+    }
+
+    if (prevSnapshot && incrementalEdit) {
+      // Spawn visible unlatch/release animations on every broken neighbor joint (move OR delete)
       for (const [key, oldLink] of prevSnapshot.links) {
         if (!nextLinks.has(key)) {
           const ghostRig = buildLinkConnectorRig(oldLink.link, oldLink.gap, oldLink.u);
@@ -1359,7 +1588,7 @@ export const SceneCanvas: React.FC<SceneCanvasProps> = (props) => {
         }
       }
 
-      // Trigger engage/latch animations on every newly formed neighbor joint
+      // Trigger engage/latch animations on every newly formed neighbor joint (move OR add)
       for (const key of nextLinks.keys()) {
         if (!prevSnapshot.links.has(key)) {
           rig.attaching.set(key, { elapsed: 0, duration: MOVE_LATCH_DURATION });
@@ -1371,11 +1600,11 @@ export const SceneCanvas: React.FC<SceneCanvasProps> = (props) => {
           }
         }
       }
-    } else if (prevSnapshot && prevSnapshot.voxelIdsKey !== nextVoxelIdsKey) {
+    } else if (prevSnapshot && !incrementalEdit) {
       clearTransientAnims(rig);
     }
 
-    rig.prevSnapshot = { voxelIdsKey: nextVoxelIdsKey, links: nextLinks };
+    rig.prevSnapshot = { voxelIds: nextVoxelIds, links: nextLinks };
 
     if (!hasFittedRef.current) {
       hasFittedRef.current = true;
@@ -1385,11 +1614,11 @@ export const SceneCanvas: React.FC<SceneCanvasProps> = (props) => {
     applyProgress();
     applyAppearance();
     syncHandlesRef.current();
-    // thermal participates because heat is baked into entries at build time
   }, [
     props.ir,
     props.room,
     props.thermal,
+    props.physics,
     props.assembly.plan,
     applyProgress,
     props.guides.roomBounds,
@@ -1409,15 +1638,16 @@ export const SceneCanvas: React.FC<SceneCanvasProps> = (props) => {
   // ------------------------------------------------- in-place updates (cheap, no rebuild)
   const assemblyTotal = props.assembly.plan?.steps.length ?? 0;
   const assemblyComplete = assemblyTotal === 0 || props.assembly.progress >= assemblyTotal - 1e-6;
+  const morphActive = Boolean(props.morph);
 
   useEffect(() => {
     applyAppearance();
-  }, [props.mode, props.selection, props.issues, assemblyComplete, applyAppearance]);
+  }, [props.mode, props.selection, props.issues, assemblyComplete, morphActive, applyAppearance]);
 
-  // Playback: reposition/rotate voxels along their paths and engage/unlatch joints (no rebuild)
+  // Playback & Morph: reposition/rotate voxels along their paths and engage/unlatch joints (no rebuild)
   useEffect(() => {
     applyProgress();
-  }, [props.assembly.progress, applyProgress]);
+  }, [props.assembly.progress, props.morph, applyProgress]);
 
   // Axis handles follow the selection and only exist while editing is allowed
   useEffect(() => {

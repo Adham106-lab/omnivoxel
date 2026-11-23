@@ -26,13 +26,17 @@ import { VerificationInspector } from './components/VerificationInspector';
 import { ViewportPanel } from './components/ViewportPanel';
 import { buildIssueMap } from './lib/diagnostics';
 import {
+  addNeighborInDsl,
+  deleteVoxelInDsl,
   insertQuickVoxel,
   isCellFree,
   moveVoxelInDsl,
   rewriteDslCoordinates,
+  swapVoxelTypeInDsl,
   type QuickInsertKey,
 } from './lib/layout';
 import { analyzeThermal } from './lib/thermal';
+import { analyzePhysics } from './lib/physics';
 import type { CompileFailure, Guides, Selection, VisualMode } from './types';
 
 const registry = createDefaultRegistry();
@@ -89,6 +93,22 @@ export const App: React.FC = () => {
   // Derived data (memoised so the 3D scene only rebuilds when the IR / room changes)
   const issues = useMemo(() => buildIssueMap(result), [result]);
   const thermal = useMemo(() => (ir ? analyzeThermal(ir) : new Map()), [ir]);
+  const physics = useMemo(
+    () =>
+      ir
+        ? analyzePhysics(ir)
+        : {
+            byVoxel: new Map(),
+            summary: {
+              maxDisplacementMm: 0,
+              maxStressMpa: 0,
+              safetyFactor: 99,
+              totalLoadN: 0,
+              supportCount: 0,
+            },
+          },
+    [ir]
+  );
 
   useEffect(() => {
     if (!notice) return;
@@ -234,6 +254,101 @@ export const App: React.FC = () => {
     [commit]
   );
 
+  // --- Radial Menu actions (immediate DSL rewrite → compile → 5-gate verify) --
+  const handleSwapVoxelType = useCallback(
+    (id: string, manifestId: string) => {
+      const { dsl: currentDsl, room: currentRoom } = latest.current;
+      const nextDsl = swapVoxelTypeInDsl(currentDsl, id, manifestId);
+      if (nextDsl === currentDsl) return;
+      try {
+        const next = compileSource(nextDsl, currentRoom);
+        latest.current = { dsl: nextDsl, compiled: next, room: currentRoom };
+        setDsl(nextDsl);
+        commit(next, nextDsl);
+        const manifest = registry.get(manifestId);
+        const errors = next.result.errors.length;
+        setNotice(
+          `${id} → ${manifest?.name ?? manifestId} · ` +
+            (errors === 0 ? 'all gates pass' : `${errors} gate error${errors === 1 ? '' : 's'}`)
+        );
+      } catch (e) {
+        setFailure(toFailure(e));
+      }
+    },
+    [commit]
+  );
+
+  const handleAddNeighbor = useCallback(
+    (anchorId: string, manifestId: string) => {
+      const { dsl: currentDsl, room: currentRoom } = latest.current;
+      const added = addNeighborInDsl(currentDsl, anchorId, manifestId, registry);
+      if (!added) {
+        setNotice(`No open neighbor face adjacent to ${anchorId}`);
+        return;
+      }
+      try {
+        const next = compileSource(added.dsl, currentRoom);
+        latest.current = { dsl: added.dsl, compiled: next, room: currentRoom };
+        setDsl(added.dsl);
+        commit(next, added.dsl);
+        setSelection({ kind: 'voxel', id: added.addedId });
+        const errors = next.result.errors.length;
+        setNotice(
+          `Attached ${added.addedId} @ (${added.coord.x}, ${added.coord.y}, ${added.coord.z}) · ` +
+            (errors === 0 ? 'all gates pass' : `${errors} gate error${errors === 1 ? '' : 's'}`)
+        );
+      } catch (e) {
+        setFailure(toFailure(e));
+      }
+    },
+    [commit]
+  );
+
+  const handleDeleteVoxel = useCallback(
+    (id: string) => {
+      const { dsl: currentDsl, compiled: current, room: currentRoom } = latest.current;
+      if (!current || current.ir.voxels.length <= 1) {
+        setNotice('Cannot remove the last voxel in the assembly');
+        return;
+      }
+      const nextDsl = deleteVoxelInDsl(currentDsl, id);
+      if (nextDsl === currentDsl) return;
+      try {
+        const next = compileSource(nextDsl, currentRoom);
+        latest.current = { dsl: nextDsl, compiled: next, room: currentRoom };
+        setDsl(nextDsl);
+        commit(next, nextDsl);
+        const errors = next.result.errors.length;
+        setNotice(
+          `Detached ${id} · ` +
+            (errors === 0 ? 'all gates pass' : `${errors} gate error${errors === 1 ? '' : 's'}`)
+        );
+      } catch (e) {
+        setFailure(toFailure(e));
+      }
+    },
+    [commit]
+  );
+
+  /** Commits target furniture preset after live Morph reconfiguration finishes without camera jump. */
+  const handleCommitMorphPreset = useCallback(
+    (item: GalleryItem) => {
+      setGalleryId(item.id);
+      setDsl(item.dsl);
+      setRoom(item.roomEnvironment);
+      setSelection(null);
+      try {
+        const next = compileSource(item.dsl, item.roomEnvironment);
+        latest.current = { dsl: item.dsl, compiled: next, room: item.roomEnvironment };
+        commit(next, item.dsl);
+        setNotice(`Reconfigured into ${item.name} · all gates pass`);
+      } catch (e) {
+        setFailure(toFailure(e));
+      }
+    },
+    [commit]
+  );
+
   // --- Editor helpers --------------------------------------------------------
   const handleQuickInsert = useCallback(
     (key: QuickInsertKey) => setDsl((current) => insertQuickVoxel(current, key, registry)),
@@ -275,18 +390,24 @@ export const App: React.FC = () => {
         {/* Left: 3D viewport */}
         <section className="min-h-0 min-w-0 lg:col-span-7">
           <ViewportPanel
+            galleryId={galleryId}
             ir={ir}
             room={room}
             mode={mode}
             selection={selection}
             issues={issues}
             thermal={thermal}
+            physics={physics}
             guides={guides}
             cameraTrigger={cameraTrigger}
             notice={notice}
             onSelect={handleSelect}
             onFit={fitCamera}
             onMoveVoxel={handleMoveVoxel}
+            onSwapVoxelType={handleSwapVoxelType}
+            onAddNeighbor={handleAddNeighbor}
+            onDeleteVoxel={handleDeleteVoxel}
+            onCommitMorphPreset={handleCommitMorphPreset}
           />
         </section>
 
